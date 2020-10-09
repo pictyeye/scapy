@@ -536,6 +536,10 @@ class tlsSession(object):
         if self.extms and self.session_hash is None:
             warning("Missing session hash while computing master secret!")
 
+        if self.pwcs is None:
+            self.pwcs = self.wcs
+        if self.prcs is None:
+            self.prcs = self.rcs
         ms = self.pwcs.prf.compute_master_secret(self.pre_master_secret,
                                                  self.client_random,
                                                  self.server_random,

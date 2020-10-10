@@ -144,6 +144,8 @@ class connState(object):
                     "Is the cryptography Python module installed?")
             return
 
+        self.ready = ciphersuite.key_block_len == 0
+
         self.compression = compression_alg()
         self.key_exchange = ciphersuite.kx_alg()
         self.cipher = ciphersuite.cipher_alg()
@@ -269,6 +271,8 @@ class connState(object):
             cipher = cipher_alg(cipher_secret, fixed_iv, nonce_explicit_init)
             self.debug_repr("aead fixed iv", fixed_iv)
         self.cipher = cipher
+
+        self.ready = True
 
     def sslv2_derive_keys(self, key_material):
         """

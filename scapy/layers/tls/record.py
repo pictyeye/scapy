@@ -554,12 +554,12 @@ class TLS(_GenericTLSSessionInheritance):
         if (self.tls_session.tls_version and
                 self.tls_session.tls_version <= 0x0303):
             if self.tls_session.triggered_prcs_commit:
-                if self.tls_session.prcs is not None:
+                if self.tls_session.prcs is not None and self.tls_session.prcs.ready:
                     self.tls_session.rcs = self.tls_session.prcs
                     self.tls_session.prcs = None
                 self.tls_session.triggered_prcs_commit = False
             if self.tls_session.triggered_pwcs_commit:
-                if self.tls_session.pwcs is not None:
+                if self.tls_session.pwcs is not None and self.tls_session.pwcs.ready:
                     self.tls_session.wcs = self.tls_session.pwcs
                     self.tls_session.pwcs = None
                 self.tls_session.triggered_pwcs_commit = False
@@ -723,7 +723,7 @@ class TLS(_GenericTLSSessionInheritance):
         # update nothing if the pwcs was not set. This probably means that
         # we're working out-of-context (and we need to keep the default wcs).
         if self.tls_session.triggered_pwcs_commit:
-            if self.tls_session.pwcs is not None:
+            if self.tls_session.pwcs is not None and self.tls_session.pwcs.ready:
                 self.tls_session.wcs = self.tls_session.pwcs
                 self.tls_session.pwcs = None
             self.tls_session.triggered_pwcs_commit = False

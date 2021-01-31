@@ -95,7 +95,10 @@ class connState(object):
                     "Is the cryptography Python module installed?")
             return
 
-        self.ready = ciphersuite.key_block_len == 0
+        try:
+            self.ready = ciphersuite.key_block_len == 0
+        except:
+            self.ready = ciphersuite.val != 0
 
         self.compression = compression_alg()
         self.key_exchange = ciphersuite.kx_alg()
@@ -249,6 +252,8 @@ class connState(object):
         self.debug_repr("cipher_secret", cipher_secret)
 
     def tls13_derive_keys(self, key_material):
+        if self.ciphersuite.val == 0:
+            return
         cipher_alg = self.ciphersuite.cipher_alg
         key_len = cipher_alg.key_len
         iv_len = cipher_alg.fixed_iv_len
@@ -464,6 +469,9 @@ class tlsSession(object):
 
         self.encrypt_then_mac = False
 
+        self.tls13_derived_secrets["client_handshake_traffic_secret"] = ''
+        self.tls13_derived_secrets["server_handshake_traffic_secret"] = ''
+
         # All exchanged TLS packets.
         # XXX no support for now
         # self.exchanged_pkts = []
@@ -608,6 +616,10 @@ class tlsSession(object):
         self.handshake_messages should be ClientHello only.
         """
 
+
+        if (self.prcs and self.prcs.ciphersuite.val == 0) or (self.pwcs and self.pwcs.ciphersuite.val == 0):
+            return
+
         # if no hash algorithm is set, default to SHA-256
         if self.prcs and self.prcs.hkdf:
             hkdf = self.prcs.hkdf
@@ -654,9 +666,14 @@ class tlsSession(object):
         Ciphers key and IV are updated accordingly for Handshake data.
         self.handshake_messages should be ClientHello...ServerHello.
         """
+
         if self.prcs:
+            if self.prcs.ciphersuite.val == 0:
+                return
             hkdf = self.prcs.hkdf
         elif self.pwcs:
+            if self.pwcs.ciphersuite.val == 0:
+                return
             hkdf = self.pwcs.hkdf
         else:
             warning("No HKDF. This is abnormal.")
@@ -684,6 +701,8 @@ class tlsSession(object):
         Ciphers key and IV are updated accordingly for Application data.
         self.handshake_messages should be ClientHello...ServerFinished.
         """
+        if (self.prcs and self.prcs.ciphersuite.val == 0) or (self.pwcs and self.pwcs.ciphersuite.val == 0):
+            return
         if self.prcs and self.prcs.hkdf:
             hkdf = self.prcs.hkdf
         elif self.pwcs and self.pwcs.hkdf:
@@ -730,12 +749,16 @@ class tlsSession(object):
         shts = "server_handshake_traffic_secret"
         chts = "client_handshake_traffic_secret"
         if read_or_write == "read":
+            if self.rcs.ciphersuite.val == 0:
+                return
             hkdf = self.rcs.hkdf
             if connection_end == "client":
                 basekey = self.tls13_derived_secrets[shts]
             elif connection_end == "server":
                 basekey = self.tls13_derived_secrets[chts]
         elif read_or_write == "write":
+            if self.wcs.ciphersuite.val == 0:
+                return
             hkdf = self.wcs.hkdf
             if connection_end == "client":
                 basekey = self.tls13_derived_secrets[chts]

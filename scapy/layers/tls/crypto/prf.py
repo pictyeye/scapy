@@ -187,6 +187,8 @@ class PRF(object):
     """
 
     def __init__(self, hash_name="SHA256", tls_version=0x0303):
+        if tls_version is None:
+            tls_version = 0x0301
         self.tls_version = tls_version
         self.hash_name = hash_name
 

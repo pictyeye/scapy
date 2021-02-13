@@ -1375,7 +1375,7 @@ conf.L3socket = L3RawSocket
 
 def _test():
     req = IP(dst="127.0.0.1")/ICMP()
-    ans = sr1(req)
+    ans = sr1(req, timeout=3)
     assert (ans.time - req.sent_time) >= 0
     assert (ans.time - req.sent_time) <= 1e-3
 
@@ -1565,7 +1565,7 @@ assert a.sent_time is None
 def _test():
     old_debug_dissector = conf.debug_dissector
     conf.debug_dissector = False
-    ans,unans=sr(IP(dst="www.google.com/30")/TCP(dport=[80,443]),timeout=2)
+    ans,unans=sr(IP(dst="www.google.com/30")/TCP(dport=[80,443]), timeout=2)
     conf.debug_dissector = old_debug_dissector
     
     # Backward compatibility: Python 2 only
@@ -1653,7 +1653,7 @@ def _send_or_sniff(pkt, timeout, flt, pid, fork, t_other=None, opened_socket=Non
         if fork:
             os.waitpid(pid, 0)
         else:
-            t_other.join()
+            t_other.join(timeout=3)
     assert raw(pkt) in (raw(p[pkt.__class__]) for p in pkts if pkt.__class__ in p)
 
 def send_and_sniff(pkt, timeout=2, flt=None, opened_socket=None):
@@ -1670,8 +1670,8 @@ def send_and_sniff(pkt, timeout=2, flt=None, opened_socket=None):
         t_child = Thread(target=run_function, args=(pkt, timeout, flt, 1, t_parent, results, opened_socket), name="send_and_sniff 2")
         t_parent.start()
         t_child.start()
-        t_parent.join()
-        t_child.join()
+        t_parent.join(timeout=3)
+        t_child.join(timeout=3)
         assert results.qsize() >= 2
         while not results.empty():
             assert results.get()
@@ -1818,6 +1818,10 @@ assert pktpcapnano[0].time == 1454163407.666223049
 pktpcapngdefaults = rdpcap(pcapngdefaults)
 assert pktpcapngdefaults[0].time == 1575115986.114775512
 assert Ether in pktpcapngdefaults[0]
+
+= Read a pcapng with little-endian SHB
+pktcapng = sniff(offline=scapy_path("/test/pcaps/macos.pcapng.gz"))
+assert len(pktcapng) != 0
 
 = Read a pcap file with wirelen != captured len
 pktpcapwirelen = rdpcap(pcapwirelenfile)
@@ -1983,11 +1987,29 @@ assert isinstance(pkt, Padding) and pkt.load == b'\xeay$\xf6'
 pkt = pkt.payload
 assert isinstance(pkt, NoPayload)
 
-= Invalid pcapng file
+= Invalid pcapng files
 
 from io import BytesIO
-invalid_pcapngfile = BytesIO(b'\n\r\r\n\r\x00\x00\x00M<+\x1a\xb2<\xb2\xa1\x01\x00\x00\x00\r\x00\x00\x00M<+\x1a\x80\xaa\xb2\x02')
-assert(len(rdpcap(invalid_pcapngfile)) == 0)
+
+# Invalid PCAPNG format -> Raise
+try:
+    invalid_pcapngfile_1 = BytesIO(b'\n\r\r\n\r\x00\x00\x00M<+\x1a\xb2<\xb2\xa1\x01\x00\x00\x00\r\x00\x00\x00M<+\x1a\x80\xaa\xb2\x02')
+    rdpcap(invalid_pcapngfile_1)
+    assert False
+except Scapy_Exception:
+    pass
+
+# Invalid Packet in PCAPNG -> return
+invalid_pcapngfile_2 = BytesIO(b'\n\r\r\n\x00\x00\x00\x10\x1a+<M\x00\x00\x00\x10\x00\x00\x00\x01\x00\x00\x00\x10    \x00\x00\x00\x10')
+assert len(rdpcap(invalid_pcapngfile_2)) == 0
+
+# Invalid interface ID in PCAPNG -> raise EOFError
+try:
+    invalid_pcapngfile_3 = BytesIO(b'\n\n\n\x14\x00\x00\x00M<+\x1a    \x14\x00\x00\x00\x03\x00\x00\x00\x14\x00\x00\x00        \x14\x00\x00\x00')
+    rdpcap(invalid_pcapngfile_3)
+    assert False
+except Scapy_Exception:
+    pass
 
 = Check PcapWriter on null write
 
@@ -3089,7 +3111,7 @@ class DNSTCP(Packet):
 ssck = StreamSocket(sck)
 ssck.basecls = DNSTCP
 
-r = ssck.sr1(DNSTCP(dns=DNS(rd=1, qd=DNSQR(qname="www.example.com"))))
+r = ssck.sr1(DNSTCP(dns=DNS(rd=1, qd=DNSQR(qname="www.example.com"))), timeout=3)
 sck.close()
 assert(DNSTCP in r and len(r.dns.an))
 

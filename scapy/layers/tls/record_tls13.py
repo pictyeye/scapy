@@ -118,14 +118,7 @@ class TLS13(_GenericTLSSessionInheritance):
         add_data = (pkcs_i2osp(self.type, 1) +
                     pkcs_i2osp(self.version, 2) +
                     pkcs_i2osp(len(s), 2))
-        try:
-            return rcs.cipher.auth_decrypt(add_data, s, read_seq_num)
-        except CipherError as e:
-            return e.args
-        except AEADTagError as e:
-            pkt_info = self.firstlayer().summary()
-            log_runtime.info("TLS: record integrity check failed [%s]", pkt_info)  # noqa: E501
-            return e.args
+        return rcs.cipher.auth_decrypt(add_data, s, read_seq_num)
 
     def pre_dissect(self, s):
         """

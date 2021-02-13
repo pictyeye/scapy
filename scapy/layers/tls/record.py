@@ -358,21 +358,14 @@ class TLS(_GenericTLSSessionInheritance):
         failure. Also, if the integrity check fails, a warning will be issued,
         but we still return the sliced (unauthenticated) plaintext.
         """
-        try:
-            read_seq_num = struct.pack("!Q", self.tls_session.rcs.seq_num)
-            self.tls_session.rcs.seq_num += 1
-            # self.type and self.version have not been parsed yet,
-            # this is why we need to look into the provided hdr.
-            add_data = read_seq_num + hdr[:3]
-            # Last two bytes of add_data are appended by the return function
-            return self.tls_session.rcs.cipher.auth_decrypt(add_data, s,
-                                                            read_seq_num)
-        except CipherError as e:
-            return e.args
-        except AEADTagError as e:
-            pkt_info = self.firstlayer().summary()
-            log_runtime.info("TLS: record integrity check failed [%s]", pkt_info)  # noqa: E501
-            return e.args
+        read_seq_num = struct.pack("!Q", self.tls_session.rcs.seq_num)
+        self.tls_session.rcs.seq_num += 1
+        # self.type and self.version have not been parsed yet,
+        # this is why we need to look into the provided hdr.
+        add_data = read_seq_num + hdr[:3]
+        # Last two bytes of add_data are appended by the return function
+        return self.tls_session.rcs.cipher.auth_decrypt(add_data, s,
+                                                        read_seq_num)
 
     def _tls_decrypt(self, s):
         """
@@ -414,7 +407,7 @@ class TLS(_GenericTLSSessionInheritance):
             else:
                 raise Exception("Unrecognized version.")
         except HMACError:
-            h = mac
+            return False
         return h == mac
 
     def _tls_decompress(self, s):
@@ -463,6 +456,7 @@ class TLS(_GenericTLSSessionInheritance):
                 log_runtime.info(
                     "TLS: record integrity check failed [%s]", pkt_info,
                 )
+                raise Exception("TLS integrity check failed")
 
         if cipher_type == 'block':
             version = struct.unpack("!H", s[1:3])[0]

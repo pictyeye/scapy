@@ -123,7 +123,7 @@ def run_openssl_client(msg, suite="", version="", tls13=False, client_auth=False
     )
     msg += b"\nstop_server\n"
     out = p.communicate(input=msg)[0]
-    print(out.decode())
+    print(plain_str(out))
     if p.returncode != 0:
         raise RuntimeError("OpenSSL returned with error code %s" % p.returncode)
     else:
@@ -367,10 +367,11 @@ load_layer("http")
 
 def _test_connection():
     a = TLSClientAutomaton.tlslink(HTTP, server="www.google.com", dport=443,
-                                   server_name="www.google.com")
+                                   server_name="www.google.com", debug=4)
     pkt = a.sr1(HTTP()/HTTPRequest(Host="www.google.com"),
                 session=TCPSession(app=True), timeout=2, retry=3)
     a.close()
+    assert pkt
     assert HTTPResponse in pkt
     assert b"</html>" in pkt[HTTPResponse].load
 

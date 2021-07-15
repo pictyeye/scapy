@@ -519,10 +519,10 @@ def remove_empty_testsets(test_campaign):
 # RUN TEST #
 
 def run_test(test, get_interactive_session, theme, verb=3,
-             ignore_globals=None, my_globals=None):
+             my_globals=None):
     """An internal UTScapy function to run a single test"""
     start_time = time.time()
-    test.output, res = get_interactive_session(test.test.strip(), ignore_globals=ignore_globals, verb=verb, my_globals=my_globals)
+    test.output, res = get_interactive_session(test.test.strip(), verb=verb, my_globals=my_globals)
     test.result = "failed"
     try:
         if res is None or res:
@@ -568,12 +568,13 @@ def import_UTscapy_tools(ses):
 
 def run_campaign(test_campaign, get_interactive_session, theme,
                  drop_to_interpreter=False, verb=3,
-                 ignore_globals=None, scapy_ses=None):
+                 scapy_ses=None):
     passed = failed = 0
     if test_campaign.preexec:
         test_campaign.preexec_output = get_interactive_session(
-            test_campaign.preexec.strip(), ignore_globals=ignore_globals,
-            my_globals=scapy_ses)[0]
+            test_campaign.preexec.strip(),
+            my_globals=scapy_ses
+        )[0]
 
     # Drop
     def drop(scapy_ses):
@@ -618,12 +619,24 @@ def run_campaign(test_campaign, get_interactive_session, theme,
 
 #    INFO LINES    #
 
-def info_line(test_campaign):
+def info_line(test_campaign, theme):
     filename = test_campaign.filename
+    duration = test_campaign.duration
+    if duration > 10:
+        duration = theme.format(duration, "bg_red+white")
+    elif duration > 5:
+        duration = theme.format(duration, "red")
     if filename is None:
-        return "Run %s by UTscapy" % time.ctime()
+        return "Run at %s by UTscapy in %s" % (
+            time.strftime("%H:%M:%S"),
+            duration
+        )
     else:
-        return "Run %s from [%s] by UTscapy" % (time.ctime(), filename)
+        return "Run at %s from [%s] by UTscapy in %s" % (
+            time.strftime("%H:%M:%S"),
+            filename,
+            duration
+        )
 
 
 def html_info_line(test_campaign):
@@ -641,7 +654,7 @@ def campaign_to_TEXT(test_campaign, theme):
     ftheme = [lambda x: x, theme.fail][bool(test_campaign.failed)]
 
     output = theme.green("\n%(title)s\n" % test_campaign)
-    output += dash + " " + info_line(test_campaign) + "\n"
+    output += dash + " " + info_line(test_campaign, theme) + "\n"
     output += ptheme(" " + arrow + " Passed=%(passed)i\n" % test_campaign)
     output += ftheme(" " + arrow + " Failed=%(failed)i\n" % test_campaign)
     output += "%(headcomments)s\n" % test_campaign
@@ -841,7 +854,7 @@ def usage():
 def execute_campaign(TESTFILE, OUTPUTFILE, PREEXEC, NUM, KW_OK, KW_KO, DUMP, DOCS,
                      FORMAT, VERB, ONLYFAILED, CRC, INTERPRETER,
                      autorun_func, theme, pos_begin=0,
-                     ignore_globals=None, scapy_ses=None):  # noqa: E501
+                     scapy_ses=None):  # noqa: E501
     # Parse test file
     try:
         test_campaign = parse_campaign_file(TESTFILE)
@@ -885,7 +898,6 @@ def execute_campaign(TESTFILE, OUTPUTFILE, PREEXEC, NUM, KW_OK, KW_KO, DUMP, DOC
         test_campaign, autorun_func[FORMAT], theme,
         drop_to_interpreter=INTERPRETER,
         verb=VERB,
-        ignore_globals=None,
         scapy_ses=scapy_ses
     )
 
@@ -927,7 +939,6 @@ def main():
     argv = sys.argv[1:]
     logger = logging.getLogger("scapy")
     logger.addHandler(logging.StreamHandler())
-    ignore_globals = list(six.moves.builtins.__dict__)
 
     import scapy
     print(dash + " UTScapy - Scapy %s - %s" % (
@@ -1066,8 +1077,8 @@ def main():
     except AttributeError:
         pass
 
-    if conf.use_pcap:
-        KW_KO.append("not_pcapdnet")
+    if conf.use_pcap or WINDOWS:
+        KW_KO.append("not_libpcap")
         if VERB > 2:
             print(" " + arrow + " libpcap mode")
 
@@ -1146,7 +1157,6 @@ def main():
                 FORMAT, VERB, ONLYFAILED, CRC, INTERPRETER,
                 autorun_func, theme,
                 pos_begin=pos_begin,
-                ignore_globals=ignore_globals,
                 scapy_ses=copy.copy(scapy_ses)
             )
         runned_campaigns.append(campaign)

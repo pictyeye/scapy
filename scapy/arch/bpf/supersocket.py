@@ -24,7 +24,6 @@ from scapy.error import Scapy_Exception, warning
 from scapy.interfaces import network_name
 from scapy.supersocket import SuperSocket
 from scapy.compat import raw
-from scapy.layers.l2 import Loopback
 
 
 if FREEBSD:
@@ -107,6 +106,7 @@ class _L2bpfSocket(SuperSocket):
                                   self.dev_bpf)
 
         # Configure the BPF filter
+        filter_attached = False
         if not nofilter:
             if conf.except_filter:
                 if filter:
@@ -116,8 +116,19 @@ class _L2bpfSocket(SuperSocket):
             if filter is not None:
                 try:
                     attach_filter(self.ins, filter, self.iface)
+                    filter_attached = True
                 except ImportError as ex:
                     warning("Cannot set filter: %s" % ex)
+        if NETBSD and filter_attached is False:
+            # On NetBSD, a filter must be attached to an interface, otherwise
+            # no frame will be received by os.read(). When no filter has been
+            # configured, Scapy uses a simple tcpdump filter that does nothing
+            # more than ensuring the length frame is not null.
+            filter = "greater 0"
+            try:
+                attach_filter(self.ins, filter, self.iface)
+            except ImportError as ex:
+                warning("Cannot set filter: %s" % ex)
 
         # Set the guessed packet class
         self.guessed_cls = self.guess_cls()
@@ -231,7 +242,7 @@ class _L2bpfSocket(SuperSocket):
         the available sockets.
         """
         # sockets, None (means use the socket's recv() )
-        return bpf_select(sockets, remain), None
+        return bpf_select(sockets, remain)
 
 
 class L2bpfListenSocket(_L2bpfSocket):
@@ -363,6 +374,7 @@ class L3bpfSocket(L2bpfSocket):
 
     def send(self, pkt):
         """Send a packet"""
+        from scapy.layers.l2 import Loopback
 
         # Use the routing table to find the output interface
         iff = pkt.route()[0]
@@ -378,14 +390,31 @@ class L3bpfSocket(L2bpfSocket):
             self.assigned_interface = iff
 
         # Build the frame
-        if self.guessed_cls == Loopback:
-            # bpf(4) man page (from macOS, but also for BSD):
-            # "A packet can be sent out on the network by writing to a bpf
-            # file descriptor. [...] Currently only writes to Ethernets and
-            # SLIP links are supported"
-            #
-            # Headers are only mentioned for reads, not writes. tuntaposx's tun
-            # device reports as a "loopback" device, but it does IP.
+        #
+        # LINKTYPE_NULL / DLT_NULL (Loopback) is a special case. From the
+        # bpf(4) man page (from macOS/Darwin, but also for BSD):
+        #
+        # "A packet can be sent out on the network by writing to a bpf file
+        # descriptor. [...] Currently only writes to Ethernets and SLIP links
+        # are supported."
+        #
+        # Headers are only mentioned for reads, not writes, and it has the
+        # name "NULL" and id=0.
+        #
+        # The _correct_ behaviour appears to be that one should add a BSD
+        # Loopback header to every sent packet. This is needed by FreeBSD's
+        # if_lo, and Darwin's if_lo & if_utun.
+        #
+        # tuntaposx appears to have interpreted "NULL" as "no headers".
+        # Thankfully its interfaces have a different name (tunX) to Darwin's
+        # if_utun interfaces (utunX).
+        #
+        # There might be other drivers which make the same mistake as
+        # tuntaposx, but these are typically provided with VPN software, and
+        # Apple are breaking these kexts in a future version of macOS... so
+        # the problem will eventually go away. They already don't work on Macs
+        # with Apple Silicon (M1).
+        if DARWIN and iff.startswith('tun') and self.guessed_cls == Loopback:
             frame = raw(pkt)
         else:
             frame = raw(self.guessed_cls() / pkt)

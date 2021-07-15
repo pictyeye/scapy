@@ -70,10 +70,10 @@ def get_if_raw_addr(ifname):
     )
     stdout, stderr = subproc.communicate()
     if subproc.returncode:
-        warning("Failed to execute ifconfig: (%s)", plain_str(stderr))
+        warning("Failed to execute ifconfig: (%s)", plain_str(stderr).strip())
         return b"\0\0\0\0"
-    # Get IPv4 addresses
 
+    # Get IPv4 addresses
     addresses = [
         line.strip() for line in plain_str(stdout).splitlines()
         if "inet " in line
@@ -108,7 +108,7 @@ def get_if_raw_hwaddr(ifname):
     stdout, stderr = subproc.communicate()
     if subproc.returncode:
         raise Scapy_Exception("Failed to execute ifconfig: (%s)" %
-                              (plain_str(stderr)))
+                              plain_str(stderr).strip())
 
     # Get MAC addresses
     addresses = [
@@ -122,6 +122,11 @@ def get_if_raw_hwaddr(ifname):
     # Pack and return the MAC address
     mac = addresses[0].split(' ')[1]
     mac = [chr(int(b, 16)) for b in mac.split(':')]
+
+    # Check that the address length is correct
+    if len(mac) != 6:
+        raise Scapy_Exception("No MAC address found on %s !" % ifname)
+
     return (ARPHDR_ETHER, ''.join(mac))
 
 

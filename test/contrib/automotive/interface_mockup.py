@@ -110,7 +110,7 @@ def cleanup_interfaces():
     :return: True on success
     """
     import threading
-    from scapy.contrib.isotp import CANReceiverThread
+    from scapy.contrib.isotp.isotp_soft_socket import CANReceiverThread
     for t in threading.enumerate():
         if isinstance(t, CANReceiverThread):
             t.join(10)
@@ -162,7 +162,7 @@ def exit_if_no_isotp_module():
         sys.__stderr__.write(err)
         warning("Can't test ISOTPNativeSocket because "
                 "kernel module isn't loaded")
-        exit(0)
+        sys.exit(0)
 
 
 # ############################################################################

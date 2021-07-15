@@ -188,6 +188,8 @@ assert p == "127.0.0.1"
 
 = Interface related functions
 
+import mock
+
 conf.iface
 
 get_if_raw_hwaddr(conf.iface)
@@ -206,6 +208,16 @@ get_if_list()
 get_working_if()
 
 get_if_raw_addr6(conf.iface)
+
+if not WINDOWS:
+    addr = u"lladdr 29:0b:c2:ff:fe:53:21:e9\n"
+    b = Bunch(returncode=0, communicate=lambda *args, **kargs: (addr, None))
+    with mock.patch('scapy.arch.bpf.core.subprocess.Popen', return_value=b) as popen:
+        try:
+            scapy.arch.bpf.core.get_if_raw_hwaddr("fw0")
+            assert False
+        except Scapy_Exception:
+            assert True
 
 = More Interfaces related functions
 
@@ -817,14 +829,18 @@ scapy_delete_temp_files()
 atol("www.secdev.org") == 3642339845
 
 = Test autorun functions
+~ autorun
 
 ret = autorun_get_text_interactive_session("IP().src")
+ret
 assert(ret == (">>> IP().src\n'127.0.0.1'\n", '127.0.0.1'))
 
 ret = autorun_get_html_interactive_session("IP().src")
+ret
 assert(ret == ("<span class=prompt>&gt;&gt;&gt; </span>IP().src\n'127.0.0.1'\n", '127.0.0.1'))
 
 ret = autorun_get_latex_interactive_session("IP().src")
+ret
 assert(ret == ("\\textcolor{blue}{{\\tt\\char62}{\\tt\\char62}{\\tt\\char62} }IP().src\n'127.0.0.1'\n", '127.0.0.1'))
 
 ret = autorun_get_text_interactive_session("scapy_undefined")
@@ -872,8 +888,14 @@ conf.netcache
 
 = Test pyx detection functions
 
-from scapy.extlib import _test_pyx
-assert _test_pyx() == False
+from mock import patch
+
+def _r(*args, **kwargs):
+    raise OSError
+
+with patch("scapy.extlib.subprocess.check_call", _r):
+    from scapy.extlib import _test_pyx
+    assert _test_pyx() == False
 
 = Test matplotlib detection functions
 
@@ -1282,7 +1304,7 @@ a = ASN1_DECODING_ERROR("error", exc=OSError(1))
 assert repr(a) == "<ASN1_DECODING_ERROR['error']{{1}}>"
 b = ASN1_DECODING_ERROR("error", exc=OSError(ASN1_BIT_STRING("0")))
 assert repr(b) in ["<ASN1_DECODING_ERROR['error']{{<ASN1_BIT_STRING[0]=b'\\x00' (7 unused bits)>}}>",
-                   "<ASN1_DECODING_ERROR['error']{{<ASN1_BIT_STRING[0]=\x00 (7 unused bits)>}}>"]
+                   "<ASN1_DECODING_ERROR['error']{{<ASN1_BIT_STRING[0]='\\x00' (7 unused bits)>}}>"]
 
 = ASN1 - ASN1_INTEGER
 a = ASN1_INTEGER(int("1"*23))
@@ -1379,9 +1401,36 @@ def _test():
     assert (ans.time - req.sent_time) >= 0
     assert (ans.time - req.sent_time) <= 1e-3
 
-retry_test(_test)
+try:
+    retry_test(_test)
+finally:
+    conf.L3socket = sock
 
-conf.L3socket = sock
+= Test sniffing on multiple sockets
+~ netaccess needs_root sniff
+
+# This test sniffs on the same interface twice at the same time, to
+# simulate sniffing on multiple interfaces.
+
+iface = conf.route.route("www.google.com")[0]
+port = int(RandShort())
+pkt = IP(dst="www.google.com")/TCP(sport=port, dport=80, flags="S")
+
+def cb():
+    sr1(pkt, timeout=3)
+
+sniffer = AsyncSniffer(started_callback=cb,
+                       iface=[iface, iface],
+                       lfilter=lambda x: TCP in x and x[TCP].dport == port,
+                       prn=lambda x: x.summary(),
+                       count=2)
+sniffer.start()
+sniffer.join(timeout=3)
+
+assert len(sniffer.results) == 2
+
+for pkt in sniffer.results:
+    assert pkt.sniffed_on == iface
 
 = Sending a TCP syn 'forever' at layer 2 and layer 3
 ~ netaccess IP
@@ -2011,6 +2060,14 @@ try:
 except Scapy_Exception:
     pass
 
+# Invalid SPB in PCAPNG -> raise EOFError
+try:
+    invalid_pcapngfile_4 = BytesIO(b'\n\n\n\x14\x00\x00\x00M<+\x1a    \x14\x00\x00\x00\x01\x00\x00\x00\x14\x00\x00\x00        \x14\x00\x00\x00\x03\x00\x00\x00\x0c\x00\x00\x00\x0c\x00\x00\x00')
+    rdpcap(invalid_pcapngfile_4)
+    assert False
+except Scapy_Exception:
+    pass
+
 = Check PcapWriter on null write
 
 f = BytesIO()
@@ -2049,6 +2106,12 @@ assert r.linktype == DLT_EN10MB
 
 l = [ p for p in RawPcapReader(f) ]
 assert len(l) == 1
+
+= Check RawPcapReader on pcap
+
+fd = get_temp_file()
+wrpcap(fd, [Ether()/IP()/ICMP()])
+assert len([p for p in RawPcapReader(fd)]) == 1
 
 = Check tcpdump()
 ~ tcpdump
@@ -2105,10 +2168,14 @@ with mock.patch('subprocess.Popen', return_value=Bunch(
         stdin=f, wait=lambda: None)) as popen:
     # Prevent closing the BytesIO
     with mock.patch.object(f, 'close'):
-        tcpdump([pkt], linktype="DLT_EN3MB", use_tempfile=False)
+        tcpdump([pkt], linktype="DLT_EN10MB", use_tempfile=False)
+
+expected_command = [conf.prog.tcpdump, '-y', 'EN10MB', '-U', '-r', '-']
+if OPENBSD:
+    expected_command = [conf.prog.tcpdump, '-y', 'EN10MB', '-r', '-']
 
 popen.assert_called_once_with(
-    [conf.prog.tcpdump, '-y', 'EN3MB', '-U', '-r', '-'],
+    expected_command,
     stdin=subprocess.PIPE, stdout=None, stderr=None)
 
 print(bytes_hex(f.getvalue()))
@@ -2128,14 +2195,26 @@ with mock.patch('subprocess.Popen', return_value=Bunch(
     with mock.patch.object(f, 'close'):
         tcpdump([pkt], linktype=scapy.data.DLT_EN10MB, use_tempfile=False)
 
+expected_command = [conf.prog.tcpdump, '-y', 'EN10MB', '-U', '-r', '-']
+if OPENBSD:
+    expected_command = [conf.prog.tcpdump, '-y', 'EN10MB', '-r', '-']
+
 popen.assert_called_once_with(
-    [conf.prog.tcpdump, '-y', 'EN10MB', '-U', '-r', '-'],
+    expected_command,
     stdin=subprocess.PIPE, stdout=None, stderr=None)
 
 print(bytes_hex(f.getvalue()))
 assert raw(pkt) in f.getvalue()
 f.close()
 del f, pkt
+
+= Check sniff() offline with linktype & 802.11 filter
+~ tcpdump linux
+
+fd = get_temp_file()
+wrpcap(fd, [RadioTap()/Dot11()/Dot11ProbeReq(), RadioTap()/Dot11()])
+lst = sniff(offline=fd, filter="subtype probe-req")
+assert len(lst) == 1
 
 = Check tcpdump() command rejects non-string input for prog
 
@@ -2312,7 +2391,7 @@ default            link#11            UCSI            1        0 bridge1
     def se_get_if_addr(iface):
         """Perform specific side effects"""
         if iface == "bridge1":
-            raise OSError("Device not configured")
+            return "0.0.0.0"
         return "1.2.3.4"
     mock_get_if_addr.side_effect = se_get_if_addr
     # Test the function
@@ -2449,9 +2528,10 @@ test_osx_10_15_ipv4()
 import mock
 from io import StringIO
 
+@mock.patch("scapy.arch.get_if_addr")
 @mock.patch("scapy.arch.unix.OPENBSD")
 @mock.patch("scapy.arch.unix.os")
-def test_openbsd_6_3(mock_os, mock_openbsd):
+def test_openbsd_6_3(mock_os, mock_openbsd, mock_get_if_addr):
     """Test read_routes() on OpenBSD 6.3"""
     # 'netstat -rn -f inet' output
     netstat_output = u"""
@@ -2481,6 +2561,16 @@ default            10.0.1.254         UGS        0        0     -     8 bge0
     
     # Mocked OpenBSD parsing behavior
     mock_openbsd = True
+    
+    # Mocked get_if_addr() output
+    def se_get_if_addr(iface):
+        """Perform specific side effects"""
+        import socket
+        if iface == "bge0":
+            return "192.168.122.42"
+        return "10.0.1.26"
+    mock_get_if_addr.side_effect = se_get_if_addr
+    
     # Test the function
     from scapy.arch.unix import read_routes
     return read_routes()
@@ -2510,9 +2600,10 @@ from io import StringIO
 
 # Mocked Solaris 11.1 parsing behavior
 
+@mock.patch("scapy.arch.get_if_addr")
 @mock.patch("scapy.arch.unix.SOLARIS", True)
 @mock.patch("scapy.arch.unix.os")
-def test_solaris_111(mock_os):
+def test_solaris_111(mock_os, mock_get_if_addr):
     """Test read_routes() on Solaris 11.1"""
     # 'netstat -rvn -f inet' output
     netstat_output = u"""
@@ -2527,6 +2618,15 @@ default              0.0.0.0         10.0.2.2             net0    1500   2 UG   
     strio = StringIO(netstat_output)
     mock_os.popen = mock.MagicMock(return_value=strio)
     print(scapy.arch.unix.SOLARIS)
+    
+    # Mocked get_if_addr() output
+    def se_get_if_addr(iface):
+        """Perform specific side effects"""
+        import socket
+        if iface == "net0":
+            return "10.0.2.15"
+        return "127.0.0.1"
+    mock_get_if_addr.side_effect = se_get_if_addr
     
     # Test the function
     from scapy.arch.unix import read_routes
@@ -2849,9 +2949,10 @@ test_freebsd_10_2()
 
 import mock
 from io import StringIO
-
+ 
+@mock.patch("scapy.arch.get_if_addr")
 @mock.patch("scapy.arch.unix.os")
-def test_freebsd_13(mock_os):
+def test_freebsd_13(mock_os, mock_get_if_addr):
     """Test read_routes() on FreeBSD 13"""
     # 'netstat -rnW -f inet' output
     netstat_output = u"""
@@ -2867,6 +2968,13 @@ default            10.0.0.1           UGS         3   1500     vtnet0
     # Mocked file descriptor
     strio = StringIO(netstat_output)
     mock_os.popen = mock.MagicMock(return_value=strio)
+    # Mocked get_if_addr() behavior
+    def se_get_if_addr(iface):
+        """Perform specific side effects"""
+        if iface == "vtnet0":
+            return "10.0.0.1"
+        return "1.2.3.4"
+    mock_get_if_addr.side_effect = se_get_if_addr
     # Test the function
     from scapy.arch.unix import read_routes
     routes = read_routes()
@@ -3330,28 +3438,28 @@ for binfrm in ["\x00" * 15, b"\x00" * 17]:
 
 = Net
 
-n1 = Net("192.168.0.0/31")
-[ip for ip in n1] == ["192.168.0.0", "192.168.0.1"]
+assert list(Net("192.168.0.0/31")) == ["192.168.0.0", "192.168.0.1"]
 
-n2 = Net("192.168.0.*")
-sum(1 for ip in n2) == 256
-assert n2.__iterlen__() == 256
+assert "1.2.3.4" in Net("0.0.0.0/0")
 
-n3 = Net("192.168.0.1-5")
-sum(1 for ip in n3) == 5
-assert n3.__iterlen__() == 5
+assert "192.168.0.0/25" in Net("192.168.0.0/24")
 
-(n1 == n3) == False
+assert "192.168.0.0/23" not in Net("192.168.0.0/24")
 
-(n3 in n2) == True
+assert "0.0.0.0/1" in Net("0.0.0.0/0")
 
-= Net using web address
+assert "0.0.0.0/0" not in Net("0.0.0.0/1")
+
+assert Net("1.2.3.0/24") == Net("1.2.3.0", "1.2.3.255")
+
+assert hash(Net("1.2.3.0/24")) == hash(Net("1.2.3.0", "1.2.3.255"))
+
+= Net using name
 ~ netaccess
 
 ip = IP(dst="www.google.com")
 n1 = ip.dst
 assert isinstance(n1, Net)
-assert n1.ip_regex.match(str(n1))
 ip.show()
 
 = Multiple IP addresses test
@@ -3373,11 +3481,29 @@ assert oid.__iterlen__() == 3
 = Net6
 
 n1 = Net6("2001:db8::/127")
-sum(1 for ip in n1) == 2
+assert len(list(n1)) == 2
+assert len(n1) == 2
 
 n2 = Net6("fec0::/110")
-#len([x for x in n2]) returns 262144 (very slow)
-assert n2.__iterlen__() == 262144
+assert len(n2) == 262144
+
+assert "ffff::ffff" in Net6("::/0")
+
+assert "::/1" in Net6("::/0")
+
+assert "::/0" not in Net6("::/1")
+
+assert Net6("::/120") == Net6("::", "::ff")
+
+assert hash(Net6("::/120")) == hash(Net6("::", "::ff"))
+
+assert Net6("::1.2.3.0/120") == Net6("::1.2.3.0", "::1.2.3.255")
+
+assert hash(Net6("::1.2.3.0/120")) == hash(Net6("::1.2.3.0", "::1.2.3.255"))
+
+assert Net6("::1.2.3.0/120") != Net("1.2.3.0/24")
+
+assert hash(Net6("::1.2.3.0/120")) != hash(Net("1.2.3.0/24"))
 
 = Net6 using web address
 ~ netaccess ipv6
@@ -3385,12 +3511,11 @@ assert n2.__iterlen__() == 262144
 ip = IPv6(dst="www.google.com")
 n1 = ip.dst
 assert isinstance(n1, Net6)
-assert n1.ip_regex.match(str(n1))
+assert "www.google.com" in repr(n1)
 ip.show()
 
 ip = IPv6(dst="www.yahoo.com")
-addrs = [ip.dst, IPv6(raw(ip)).dst, [p.dst for p in ip][0]]
-assert addrs[0] == addrs[1] == addrs[2]
+assert IPv6(raw(ip)).dst == [p.dst for p in ip][0]
 
 = Multiple IPv6 addresses test
 ~ netaccess ipv6
@@ -3406,13 +3531,14 @@ assert isinstance(src, str)
 ~ netaccess
 
 conf.color_theme = BlackAndWhite()
-assert "Net('www.google.com')" in repr(IP(src="www.google.com"))
+output = repr(IP(src="www.google.com"))
+assert 'Net("www.google.com/32")' in output
 
 = Test repr on Net
 ~ netaccess ipv6
 
 conf.color_theme = BlackAndWhite()
-assert "Net6('www.google.com')" in repr(IPv6(src="www.google.com"))
+assert 'Net6("www.google.com/128")' in repr(IPv6(src="www.google.com"))
 
 ############
 ############
@@ -3949,7 +4075,7 @@ assert expect_exception(ValueError, lambda: RandUUID(version=4, name="scapy"))
 = RandUUID v1 UUID
 
 u = RandUUID(version=1)._fix()
-assert u.version == 1
+assert u.version in [1, 4]
 
 u = RandUUID(version=1, node=0x1234)._fix()
 assert u.version == 1
@@ -4168,6 +4294,22 @@ assert len(rl) == 7
 srl, rl = pl.sr(lookahead=None)
 assert len(srl) == 1
 assert len(rl) == 7
+
+= pickle test
+import pickle
+import io
+
+srl, rl = PacketList([Raw(b"1"), Raw(b"1"), Raw(b"2"), Raw(b"3"), Raw(b"4"), Raw(b"3"), Raw(b"1"), Raw(b"1"), Raw(b"4")]).sr()
+assert len(srl) == 4
+
+f = io.BytesIO()
+
+pickle.dump(srl, f)
+
+unp = pickle.loads(f.getvalue())
+
+assert len(unp) == len(srl)
+assert all(bytes(a[0]) == bytes(b[0]) for a, b in zip(unp, srl))
 
 = plot()
 

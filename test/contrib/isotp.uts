@@ -1,6 +1,6 @@
 % Regression tests for ISOTP
 
-~ vcan_socket
+~ automotive_comm
 
 + Configuration
 ~ conf
@@ -9,7 +9,7 @@
 
 from scapy.modules.six.moves.queue import Queue
 from io import BytesIO
-from scapy.contrib.isotp import get_isotp_packet
+from scapy.contrib.isotp.isotp_scanner import get_isotp_packet
 
 import scapy.modules.six as six
 
@@ -36,7 +36,7 @@ class MockCANSocket(SuperSocket):
         self.sent_queue.put(p)
     @staticmethod
     def select(sockets, remain=None):
-        return sockets, None
+        return sockets
 
 
 # utility function that waits on list l for n elements, timing out if nothing is added for 1 second
@@ -944,7 +944,7 @@ assert(not impl.rx_thread.is_alive())
 = Test on_recv function with single frame
 with ISOTPSocket(MockCANSocket(), sid=0x641, did=0x241) as s:
     s.ins.on_recv(CAN(identifier=0x241, data=dhex("05 01 02 03 04 05")))
-    msg = s.ins.rx_queue.get(True, 1)
+    msg, ts = s.ins.rx_queue.get(True, 1)
     assert(msg == dhex("01 02 03 04 05"))
 
 = Test on_recv function with empty frame
@@ -954,9 +954,11 @@ with ISOTPSocket(MockCANSocket(), sid=0x641, did=0x241) as s:
 
 = Test on_recv function with single frame and extended addressing
 with ISOTPSocket(MockCANSocket(), sid=0x641, did=0x241, extended_rx_addr=0xea) as s:
-    s.ins.on_recv(CAN(identifier=0x241, data=dhex("EA 05 01 02 03 04 05")))
-    msg = s.ins.rx_queue.get(True, 1)
+    cf = CAN(identifier=0x241, data=dhex("EA 05 01 02 03 04 05"))
+    s.ins.on_recv(cf)
+    msg, ts = s.ins.rx_queue.get(True, 1)
     assert(msg == dhex("01 02 03 04 05"))
+    assert ts == cf.time
 
 = CF is sent when first frame is received
 cans = MockCANSocket()
@@ -1440,14 +1442,19 @@ with new_can_socket0() as isocan, \
         ISOTPSoftSocket(isocan, 0x123, 0x321) as sock:
     msg.data += b'0'
     sock.send(msg)
+    time.sleep(0.1)
     msg.data += b'1'
     sock.send(msg)
+    time.sleep(0.1)
     msg.data += b'2'
     sock.send(msg)
+    time.sleep(0.1)
     msg.data += b'3'
     sock.send(msg)
+    time.sleep(0.1)
     msg.data += b'4'
     sock.send(msg)
+    time.sleep(0.1)
 
 rxThread.join(timeout=5)
 msg = ISOTP(b'\x11\x22\x33\x11\x22\x33\x11\x22\x33\x11\x22\x33')
@@ -2000,7 +2007,7 @@ with ISOTPNativeSocket(iface0, sid=0x641, did=0x241) as s:
 = ISOTP Socket sr1 test
 exit_if_no_isotp_module()
 
-txSock = ISOTPNativeSocket(iface0, sid=0x123, did=0x321)
+txSock = ISOTPNativeSocket(iface0, sid=0x123, did=0x321, basecls=ISOTP)
 txmsg = ISOTP(b'\x11\x22\x33')
 rx2 = None
 
@@ -2034,8 +2041,8 @@ assert(rx2.answers(txmsg))
 
 = ISOTP Socket sr1 and ISOTP test
 exit_if_no_isotp_module()
-txSock = ISOTPNativeSocket(iface0, 0x123, 0x321)
-rxSock = ISOTPNativeSocket(iface0, 0x321, 0x123)
+txSock = ISOTPNativeSocket(iface0, 0x123, 0x321, basecls=ISOTP)
+rxSock = ISOTPNativeSocket(iface0, 0x321, 0x123, basecls=ISOTP)
 msg = ISOTP(b'\x11\x22\x33\x11\x22\x33\x11\x22\x33\x11\x22\x33')
 rx2 = None
 
@@ -2065,8 +2072,8 @@ assert(rx2 == msg)
 = ISOTP Socket sr1 and ISOTP test vice versa
 exit_if_no_isotp_module()
 
-rxSock = ISOTPNativeSocket(iface0, 0x321, 0x123)
-txSock = ISOTPNativeSocket(iface0, 0x123, 0x321)
+rxSock = ISOTPNativeSocket(iface0, 0x321, 0x123, basecls=ISOTP)
+txSock = ISOTPNativeSocket(iface0, 0x123, 0x321, basecls=ISOTP)
 
 msg = ISOTP(b'\x11\x22\x33\x11\x22\x33\x11\x22\x33\x11\x22\x33')
 
@@ -2096,8 +2103,8 @@ assert(sent)
 = ISOTP Socket sniff
 exit_if_no_isotp_module()
 
-rxSock = ISOTPNativeSocket(iface0, 0x321, 0x123)
-txSock = ISOTPNativeSocket(iface0, 0x123, 0x321)
+rxSock = ISOTPNativeSocket(iface0, 0x321, 0x123, basecls=ISOTP)
+txSock = ISOTPNativeSocket(iface0, 0x123, 0x321, basecls=ISOTP)
 succ = False
 
 receiver_up = Event()

@@ -618,6 +618,8 @@ class tlsSession(object):
         if self.nss_keys and self.nss_keys.get("CLIENT_RANDOM", False) and \
            self.nss_keys["CLIENT_RANDOM"].get("Secret", False):
             self.master_secret = self.nss_keys["CLIENT_RANDOM"]["Secret"]
+        else:
+            self.master_secret = None
 
         if not self.master_secret:
             self.compute_master_secret()

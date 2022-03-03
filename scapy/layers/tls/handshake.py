@@ -1217,7 +1217,7 @@ class TLSCertificateVerify(_TLSHandshake):
                     context_string = b"TLS 1.3, server CertificateVerify"
                 m = b"\x20" * 64 + context_string + b"\x00" + s.wcs.hash.digest(m)  # noqa: E501
             self.sig = _TLSSignature(tls_session=s)
-            if s.connection_end == "client":
+            if s.connection_end == "client" and s.client_key is not None:
                 self.sig._update_sig(m, s.client_key)
             elif s.connection_end == "server":
                 # should be TLS 1.3 only
@@ -1406,7 +1406,7 @@ class TLSFinished(_TLSHandshake):
             s.triggered_pwcs_commit = True
             if s.connection_end == "server":
                 s.compute_tls13_traffic_secrets()
-            elif s.connection_end == "client":
+            elif s.connection_end == "client" and s.pwcs.ciphersuite.val != 0:
                 s.compute_tls13_traffic_secrets_end()
                 s.compute_tls13_resumption_secret()
 

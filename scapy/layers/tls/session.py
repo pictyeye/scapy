@@ -164,8 +164,7 @@ class connState(object):
         else:
             self.hmac = ciphersuite.hmac_alg()          # should be Hmac_NULL
             self.mac_len = self.hash.hash_len
-
-        if tls_version and tls_version >= 0x0304:
+        if tls_version and tls_version >= 0x0304 and self.hash.name.lower() != "null":
             self.hkdf = TLS13_HKDF(self.hash.name.lower())
         else:
             self.prf = PRF(ciphersuite.hash_alg.name, tls_version)

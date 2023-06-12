@@ -1,8 +1,8 @@
+# SPDX-License-Identifier: GPL-2.0-only
 # This file is part of Scapy
-# See http://www.secdev.org/projects/scapy for more information
+# See https://scapy.net/ for more information
 # Copyright (C) Philippe Biondi <phil@secdev.org>
-# Modified by Maxence Tury <maxence.tury@ssi.gouv.fr>
-# This program is published under a GPLv2 license
+# Acknowledgment: Maxence Tury <maxence.tury@ssi.gouv.fr>
 
 """
 Management Information Base (MIB) parsing
@@ -14,7 +14,7 @@ from glob import glob
 from scapy.dadict import DADict, fixname
 from scapy.config import conf
 from scapy.utils import do_graph
-import scapy.modules.six as six
+import scapy.libs.six as six
 from scapy.compat import plain_str
 
 from scapy.compat import (
@@ -146,8 +146,8 @@ def _mib_register(ident,  # type: str
             k = keys[i]
             if _mib_register(k, unresolved[k], the_mib, {}, alias):
                 # Now resolved: we can remove it from unresolved
-                del(unresolved[k])
-                del(keys[i])
+                del unresolved[k]
+                del keys[i]
                 i = 0
             else:
                 i += 1
@@ -367,16 +367,16 @@ attributeType_oids = {
 }
 
 certificateExtension_oids = {
-    "2.5.29.1": "authorityKeyIdentifier",
+    "2.5.29.1": "authorityKeyIdentifier(obsolete)",
     "2.5.29.2": "keyAttributes",
-    "2.5.29.3": "certificatePolicies",
+    "2.5.29.3": "certificatePolicies(obsolete)",
     "2.5.29.4": "keyUsageRestriction",
     "2.5.29.5": "policyMapping",
     "2.5.29.6": "subtreesConstraint",
-    "2.5.29.7": "subjectAltName",
-    "2.5.29.8": "issuerAltName",
+    "2.5.29.7": "subjectAltName(obsolete)",
+    "2.5.29.8": "issuerAltName(obsolete)",
     "2.5.29.9": "subjectDirectoryAttributes",
-    "2.5.29.10": "basicConstraints",
+    "2.5.29.10": "basicConstraints(obsolete)",
     "2.5.29.14": "subjectKeyIdentifier",
     "2.5.29.15": "keyUsage",
     "2.5.29.16": "privateKeyUsagePeriod",
@@ -388,8 +388,8 @@ certificateExtension_oids = {
     "2.5.29.22": "expirationDate",
     "2.5.29.23": "instructionCode",
     "2.5.29.24": "invalidityDate",
-    "2.5.29.25": "cRLDistributionPoints",
-    "2.5.29.26": "issuingDistributionPoint",
+    "2.5.29.25": "cRLDistributionPoints(obsolete)",
+    "2.5.29.26": "issuingDistributionPoint(obsolete)",
     "2.5.29.27": "deltaCRLIndicator",
     "2.5.29.28": "issuingDistributionPoint",
     "2.5.29.29": "certificateIssuer",
@@ -397,7 +397,7 @@ certificateExtension_oids = {
     "2.5.29.31": "cRLDistributionPoints",
     "2.5.29.32": "certificatePolicies",
     "2.5.29.33": "policyMappings",
-    "2.5.29.34": "policyConstraints",
+    "2.5.29.34": "policyConstraints(obsolete)",
     "2.5.29.35": "authorityKeyIdentifier",
     "2.5.29.36": "policyConstraints",
     "2.5.29.37": "extKeyUsage",
@@ -617,6 +617,8 @@ evPolicy_oids = {
 #
 
 gssapi_oids = {
+    '1.2.840.48018.1.2.2': 'MS KRB5 - Microsoft Kerberos 5',
+    '1.2.840.113554.1.2.2': 'Kerberos 5',
     '1.3.6.1.5.5.2': 'SPNEGO - Simple Protected Negotiation',
     '1.3.6.1.4.1.311.2.2.10': 'NTLMSSP - Microsoft NTLM Security Support Provider',
     '1.3.6.1.4.1.311.2.2.30': 'NEGOEX - SPNEGO Extended Negotiation Security Mechanism',

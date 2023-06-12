@@ -1,7 +1,7 @@
+# SPDX-License-Identifier: GPL-2.0-only
 # This file is part of Scapy
-# See http://www.secdev.org/projects/scapy for more information
+# See https://scapy.net/ for more information
 # Copyright (C) Philippe Biondi <phil@secdev.org>
-# This program is published under a GPLv2 license
 
 """
 Answering machines.
@@ -21,7 +21,7 @@ from scapy.sendrecv import send, sniff, AsyncSniffer
 from scapy.packet import Packet
 from scapy.plist import PacketList
 
-import scapy.modules.six as six
+import scapy.libs.six as six
 
 from scapy.compat import (
     Any,
@@ -59,6 +59,7 @@ class ReferenceAM(_Generic_metaclass):
             func = lambda obj=obj, *args, **kargs: obj(*args, **kargs)()  # type: ignore  # noqa: E501
             # Inject signature
             func.__name__ = func.__qualname__ = obj.function_name
+            func.__doc__ = obj.__doc__ or obj.parse_options.__doc__
             try:
                 func.__signature__ = obj.__signature__  # type: ignore
             except (AttributeError):
@@ -190,44 +191,37 @@ class AnsweringMachine(Generic[_T]):
         )
         self(*args, **kargs)
 
+    def bg(self, *args, **kwargs):
+        # type: (Any, Any) -> AsyncSniffer
+        kwargs.setdefault("bg", True)
+        self(*args, **kwargs)
+        return self.sniffer
+
     def __call__(self, *args, **kargs):
         # type: (Any, Any) -> None
+        bg = kargs.pop("bg", False)
         optsend, optsniff = self.parse_all_options(2, kargs)
         self.optsend = self.defoptsend.copy()
         self.optsend.update(optsend)
         self.optsniff = self.defoptsniff.copy()
         self.optsniff.update(optsniff)
 
-        try:
-            self.sniff()
-        except KeyboardInterrupt:
-            print("Interrupted by user")
+        if bg:
+            self.sniff_bg()
+        else:
+            try:
+                self.sniff()
+            except KeyboardInterrupt:
+                print("Interrupted by user")
 
     def sniff(self):
         # type: () -> None
         sniff(**self.optsniff)
 
-
-class AnsweringMachineUtils:
-    @staticmethod
-    def reverse_packet(req):
-        # type: (Packet) -> Packet
-        from scapy.layers.l2 import Ether
-        from scapy.layers.inet import IP, TCP, UDP
-        reply = req.copy()
-        for layer in [UDP, TCP]:
-            if req.haslayer(layer):
-                reply[layer].dport, reply[layer].sport = \
-                    req[layer].sport, req[layer].dport
-                reply[layer].chksum = None
-                reply[layer].len = None
-        if req.haslayer(IP):
-            reply[IP].src, reply[IP].dst = req[IP].dst, req[IP].src
-            reply[IP].chksum = None
-            reply[IP].len = None
-        if req.haslayer(Ether):
-            reply[Ether].src, reply[Ether].dst = req[Ether].dst, req[Ether].src
-        return reply
+    def sniff_bg(self):
+        # type: () -> None
+        self.sniffer = AsyncSniffer(**self.optsniff)
+        self.sniffer.start()
 
 
 class AnsweringMachineTCP(AnsweringMachine[Packet]):

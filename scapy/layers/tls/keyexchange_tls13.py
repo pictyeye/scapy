@@ -1,7 +1,8 @@
+# SPDX-License-Identifier: GPL-2.0-only
 # This file is part of Scapy
+# See https://scapy.net/ for more information
 # Copyright (C) 2017 Maxence Tury
 #               2019 Romain Perez
-# This program is published under a GPLv2 license
 
 """
 TLS 1.3 key exchange logic.
@@ -32,7 +33,7 @@ from scapy.layers.tls.crypto.groups import (
     _tls_named_groups_import,
     _tls_named_groups_pubbytes,
 )
-import scapy.modules.six as six
+import scapy.libs.six as six
 
 if conf.crypto_valid:
     from cryptography.hazmat.primitives.asymmetric import ec

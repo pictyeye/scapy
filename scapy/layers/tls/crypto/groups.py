@@ -1,7 +1,8 @@
+# SPDX-License-Identifier: GPL-2.0-only
 # This file is part of Scapy
+# See https://scapy.net/ for more information
 # Copyright (C) 2007, 2008, 2009 Arnaud Ebalard
 #               2015, 2016, 2017 Maxence Tury
-# This program is published under a GPLv2 license
 
 """
 This is a register for DH groups from RFC 3526 and RFC 4306.
@@ -18,7 +19,7 @@ from scapy.config import conf
 from scapy.compat import bytes_int, int_bytes
 from scapy.error import warning
 from scapy.utils import long_converter
-import scapy.modules.six as six
+import scapy.libs.six as six
 if conf.crypto_valid:
     from cryptography.hazmat.backends import default_backend
     from cryptography.hazmat.primitives.asymmetric import dh, ec

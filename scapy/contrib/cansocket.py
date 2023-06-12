@@ -1,7 +1,7 @@
+# SPDX-License-Identifier: GPL-2.0-only
 # This file is part of Scapy
-# See http://www.secdev.org/projects/scapy for more information
+# See https://scapy.net/ for more information
 # Copyright (C) Nils Weiss <nils@we155.de>
-# This program is published under a GPLv2 license
 
 # scapy.contrib.description = CANSocket Utils
 # scapy.contrib.status = loads
@@ -13,7 +13,7 @@ CANSocket.
 from scapy.error import log_loading
 from scapy.consts import LINUX
 from scapy.config import conf
-import scapy.modules.six as six
+import scapy.libs.six as six
 
 PYTHON_CAN = False
 

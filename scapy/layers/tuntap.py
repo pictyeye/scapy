@@ -1,9 +1,8 @@
-# -*- mode: python3; indent-tabs-mode: nil; tab-width: 4 -*-
+# SPDX-License-Identifier: GPL-2.0-only
 # This file is part of Scapy
-# See http://www.secdev.org/projects/scapy for more information
+# See https://scapy.net/ for more information
 # Copyright (C) Philippe Biondi <phil@secdev.org>
 # Copyright (C) Michael Farrell <micolous+git@gmail.com>
-# This program is published under a GPLv2 license
 
 """
 Implementation of TUN/TAP interfaces.
@@ -31,7 +30,7 @@ from scapy.layers.l2 import Ether
 from scapy.packet import Packet
 from scapy.supersocket import SimpleSocket
 
-import scapy.modules.six as six
+import scapy.libs.six as six
 
 # Linux-specific defines (/usr/include/linux/if_tun.h)
 LINUX_TUNSETIFF = 0x400454ca

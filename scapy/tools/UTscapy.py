@@ -1,7 +1,7 @@
+# SPDX-License-Identifier: GPL-2.0-only
 # This file is part of Scapy
-# See http://www.secdev.org/projects/scapy for more information
+# See https://scapy.net/ for more information
 # Copyright (C) Philippe Biondi <phil@secdev.org>
-# This program is published under a GPLv2 license
 
 """
 Unit testing infrastructure for Scapy
@@ -27,9 +27,8 @@ import traceback
 import warnings
 import zlib
 
-from scapy.consts import WINDOWS
-import scapy.modules.six as six
-from scapy.modules.six.moves import range
+from scapy.consts import WINDOWS, DARWIN
+import scapy.libs.six as six
 from scapy.config import conf
 from scapy.compat import base64_bytes, bytes_hex, plain_str
 from scapy.themes import DefaultTheme, BlackAndWhite
@@ -71,7 +70,7 @@ class Bunch:
 def retry_test(func):
     """Retries the passed function 3 times before failing"""
     success = False
-    for _ in six.moves.range(3):
+    for _ in range(3):
         try:
             result = func()
         except Exception:
@@ -93,6 +92,17 @@ def scapy_path(fname):
     return os.path.abspath(os.path.join(
         os.path.dirname(__file__), '../../', fname
     ))
+
+
+class no_debug_dissector:
+    """Context object used to disable conf.debug_dissector"""
+    def __enter__(self):
+        self.old_dbg = conf.debug_dissector
+        conf.debug_dissector = False
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        conf.debug_dissector = self.old_dbg
+
 
 #    Import tool    #
 
@@ -571,6 +581,7 @@ def import_UTscapy_tools(ses):
     ses["Bunch"] = Bunch
     ses["retry_test"] = retry_test
     ses["scapy_path"] = scapy_path
+    ses["no_debug_dissector"] = no_debug_dissector
     if WINDOWS:
         from scapy.arch.windows import _route_add_loopback
         _route_add_loopback()
@@ -1119,8 +1130,9 @@ def main():
     KW_KO.append("disabled")
 
     # Process extras
-    if six.PY3:
-        KW_KO.append("FIXME_py3")
+    if six.PY2 and DARWIN:
+        # On MacOS 12, Python 2.7 find_library is broken
+        KW_KO.append("libpcap")
 
     if ANNOTATIONS_MODE:
         try:

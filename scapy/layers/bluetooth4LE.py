@@ -1,8 +1,9 @@
-# This file is for use with Scapy
-# See http://www.secdev.org/projects/scapy for more information
+# SPDX-License-Identifier: GPL-2.0-only
+# This file is part of Scapy
+# See https://scapy.net/ for more information
+# Copyright (C) Philippe Biondi <phil@secdev.org>
 # Copyright (C) Airbus DS CyberSecurity
 # Authors: Jean-Michel Picod, Arnaud Lebrun, Jonathan Christofer Demay
-# This program is published under a GPLv2 license
 
 """Bluetooth 4LE layer"""
 
@@ -39,7 +40,6 @@ from scapy.contrib.ethercat import LEBitEnumField, LEBitField
 from scapy.layers.bluetooth import EIR_Hdr, L2CAP_Hdr
 from scapy.layers.ppi import PPI_Element, PPI_Hdr
 
-from scapy.modules.six.moves import range
 from scapy.utils import mac2str, str2mac
 
 ####################

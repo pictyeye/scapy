@@ -1,7 +1,7 @@
+# SPDX-License-Identifier: GPL-2.0-only
 # This file is part of Scapy
-# See http://www.secdev.org/projects/scapy for more information
+# See https://scapy.net/ for more information
 # Copyright (C) Nils Weiss <nils@we155.de>
-# This program is published under a GPLv2 license
 
 # scapy.contrib.description = ISO-TP (ISO 15765-2) Native Socket Library
 # scapy.contrib.status = library
@@ -12,16 +12,16 @@ import struct
 import socket
 
 from scapy.compat import Optional, Union, Tuple, Type, cast
+from scapy.contrib.isotp import log_isotp
 from scapy.packet import Packet
-import scapy.modules.six as six
-from scapy.error import Scapy_Exception, warning
+import scapy.libs.six as six
+from scapy.error import Scapy_Exception
 from scapy.supersocket import SuperSocket
 from scapy.data import SO_TIMESTAMPNS
 from scapy.config import conf
 from scapy.arch.linux import get_last_packet_timestamp, SIOCGIFINDEX
 from scapy.contrib.isotp.isotp_packet import ISOTP
-from scapy.layers.can import CAN_MTU, CAN_MAX_DLEN
-
+from scapy.layers.can import CAN_MTU, CAN_FD_MTU, CAN_MAX_DLEN, CAN_FD_MAX_DLEN
 
 LIBC = ctypes.cdll.LoadLibrary(find_library("c"))  # type: ignore
 
@@ -58,7 +58,9 @@ CAN_ISOTP_DEFAULT_RECV_BS = 0
 CAN_ISOTP_DEFAULT_RECV_STMIN = 0x00
 CAN_ISOTP_DEFAULT_RECV_WFTMAX = 0
 CAN_ISOTP_DEFAULT_LL_MTU = CAN_MTU
+CAN_ISOTP_CANFD_MTU = CAN_FD_MTU
 CAN_ISOTP_DEFAULT_LL_TX_DL = CAN_MAX_DLEN
+CAN_FD_ISOTP_DEFAULT_LL_TX_DL = CAN_FD_MAX_DLEN
 CAN_ISOTP_DEFAULT_LL_TX_FLAGS = 0
 
 
@@ -223,27 +225,27 @@ class ISOTPNativeSocket(SuperSocket):
             raise Scapy_Exception(m)
         return ifr
 
-    def __bind_socket(self, sock, iface, sid, did):
+    def __bind_socket(self, sock, iface, tx_id, rx_id):
         # type: (socket.socket, str, int, int) -> None
         socket_id = ctypes.c_int(sock.fileno())
         ifr = self.__get_sock_ifreq(sock, iface)
 
-        if sid > 0x7ff:
-            sid = sid | socket.CAN_EFF_FLAG
-        if did > 0x7ff:
-            did = did | socket.CAN_EFF_FLAG
+        if tx_id > 0x7ff:
+            tx_id = tx_id | socket.CAN_EFF_FLAG
+        if rx_id > 0x7ff:
+            rx_id = rx_id | socket.CAN_EFF_FLAG
 
         # select the CAN interface and bind the socket to it
         addr = sockaddr_can(ctypes.c_uint16(socket.PF_CAN),
                             ifr.ifr_ifindex,
-                            addr_info(tp(ctypes.c_uint32(did),
-                                         ctypes.c_uint32(sid))))
+                            addr_info(tp(ctypes.c_uint32(rx_id),
+                                         ctypes.c_uint32(tx_id))))
 
         error = LIBC.bind(socket_id, ctypes.byref(addr),
                           ctypes.sizeof(addr))
 
         if error < 0:
-            warning("Couldn't bind socket")
+            log_isotp.warning("Couldn't bind socket")
 
     def __set_option_flags(self,
                            sock,  # type: socket.socket
@@ -290,6 +292,7 @@ class ISOTPNativeSocket(SuperSocket):
                  padding=False,  # type: bool
                  listen_only=False,  # type: bool
                  frame_txtime=CAN_ISOTP_DEFAULT_FRAME_TXTIME,  # type: int
+                 fd=False,  # type: bool
                  basecls=ISOTP  # type: Type[Packet]
                  ):
         # type: (...) -> None
@@ -329,7 +332,11 @@ class ISOTPNativeSocket(SuperSocket):
                                        stmin=stmin, bs=bs))
         self.can_socket.setsockopt(SOL_CAN_ISOTP,
                                    CAN_ISOTP_LL_OPTS,
-                                   self.__build_can_isotp_ll_options())
+                                   self.__build_can_isotp_ll_options(
+                                       mtu=CAN_ISOTP_CANFD_MTU if fd
+                                       else CAN_ISOTP_DEFAULT_LL_MTU,
+                                       tx_dl=CAN_FD_ISOTP_DEFAULT_LL_TX_DL if fd
+                                       else CAN_ISOTP_DEFAULT_LL_TX_DL))
         self.can_socket.setsockopt(
             socket.SOL_SOCKET,
             SO_TIMESTAMPNS,
@@ -340,7 +347,7 @@ class ISOTPNativeSocket(SuperSocket):
         self.ins = self.can_socket
         self.outs = self.can_socket
         if basecls is None:
-            warning('Provide a basecls ')
+            log_isotp.warning('Provide a basecls ')
         self.basecls = basecls
 
     def recv_raw(self, x=0xffff):
@@ -352,19 +359,19 @@ class ISOTPNativeSocket(SuperSocket):
         try:
             pkt, _, ts = self._recv_raw(self.ins, x)
         except BlockingIOError:  # noqa: F821
-            warning('Captured no data, socket in non-blocking mode.')
+            log_isotp.warning('Captured no data, socket in non-blocking mode.')
             return None, None, None
         except socket.timeout:
-            warning('Captured no data, socket read timed out.')
+            log_isotp.warning('Captured no data, socket read timed out.')
             return None, None, None
         except OSError as e:
             # something bad happened (e.g. the interface went down)
-            warning("Captured no data. %s" % e)
+            log_isotp.warning("Captured no data. %s" % e)
             if e.errno == 84:
-                warning("Maybe a consecutive frame was missed. "
-                        "Increasing `stmin` could solve this problem.")
+                log_isotp.warning("Maybe a consecutive frame was missed. "
+                                  "Increasing `stmin` could solve this problem.")
             elif e.errno == 110:
-                warning('Captured no data, socket read timed out.')
+                log_isotp.warning('Captured no data, socket read timed out.')
             else:
                 self.close()
             return None, None, None

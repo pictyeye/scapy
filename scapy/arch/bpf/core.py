@@ -1,4 +1,7 @@
-# Guillaume Valadon <guillaume@valadon.net>
+# SPDX-License-Identifier: GPL-2.0-only
+# This file is part of Scapy
+# See https://scapy.net/ for more information
+# Copyright (C) Guillaume Valadon <guillaume@valadon.net>
 
 """
 Scapy *BSD native support - core
@@ -18,8 +21,8 @@ import subprocess
 
 import scapy
 from scapy.arch.bpf.consts import BIOCSETF, SIOCGIFFLAGS, BIOCSETIF
-from scapy.arch.common import get_if, compile_filter, _iff_flags
-from scapy.arch.unix import in6_getifaddr
+from scapy.arch.common import compile_filter, _iff_flags
+from scapy.arch.unix import get_if, in6_getifaddr
 from scapy.compat import plain_str
 from scapy.config import conf
 from scapy.consts import LINUX
@@ -28,7 +31,6 @@ from scapy.error import Scapy_Exception, warning
 from scapy.interfaces import InterfaceProvider, IFACES, NetworkInterface, \
     network_name
 from scapy.pton_ntop import inet_ntop
-from scapy.modules.six.moves import range
 
 if LINUX:
     raise OSError("BPF conflicts with Linux")
@@ -38,7 +40,7 @@ if LINUX:
 
 LIBC = cdll.LoadLibrary(find_library("c"))
 
-LIBC.ioctl.argtypes = [c_int, c_ulong, c_char_p]
+LIBC.ioctl.argtypes = [c_int, c_ulong, ]
 LIBC.ioctl.restype = c_int
 
 # The following is implemented as of Python >= 3.3

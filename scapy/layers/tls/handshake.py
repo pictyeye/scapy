@@ -1,8 +1,9 @@
+# SPDX-License-Identifier: GPL-2.0-only
 # This file is part of Scapy
+# See https://scapy.net/ for more information
 # Copyright (C) 2007, 2008, 2009 Arnaud Ebalard
 #               2015, 2016, 2017 Maxence Tury
 #               2019 Romain Perez
-# This program is published under a GPLv2 license
 
 """
 TLS handshake fields & logic.
@@ -36,7 +37,7 @@ from scapy.fields import (
 
 from scapy.compat import hex_bytes, orb, raw
 from scapy.config import conf
-from scapy.modules import six
+from scapy.libs import six
 from scapy.packet import Packet, Raw, Padding
 from scapy.utils import randstring, repr_hex
 from scapy.layers.x509 import OCSP_Response
@@ -455,7 +456,7 @@ class TLS13ClientHello(_TLSHandshake):
             s.sid = self.sid
             s.middlebox_compatibility = True
 
-        self.random_bytes = msg_str[10:38]
+        self.random_bytes = msg_str[6:38]
         s.client_random = self.random_bytes
         if self.ext:
             for e in self.ext:
@@ -856,9 +857,9 @@ class _ASN1CertListField(StrLenField):
         if tmp_len is not None:
             m, ret = s[:tmp_len], s[tmp_len:]
         while m:
-            clen = struct.unpack("!I", b'\x00' + m[:3])[0]
-            lst.append((clen, Cert(m[3:3 + clen])))
-            m = m[3 + clen:]
+            c_len = struct.unpack("!I", b'\x00' + m[:3])[0]
+            lst.append((c_len, Cert(m[3:3 + c_len])))
+            m = m[3 + c_len:]
         return m + ret, lst
 
     def i2m(self, pkt, i):
@@ -901,9 +902,9 @@ class _ASN1CertField(StrLenField):
         m = s
         if tmp_len is not None:
             m, ret = s[:tmp_len], s[tmp_len:]
-        clen = struct.unpack("!I", b'\x00' + m[:3])[0]
-        len_cert = (clen, Cert(m[3:3 + clen]))
-        m = m[3 + clen:]
+        c_len = struct.unpack("!I", b'\x00' + m[:3])[0]
+        len_cert = (c_len, Cert(m[3:3 + c_len]))
+        m = m[3 + c_len:]
         return m + ret, len_cert
 
     def i2m(self, pkt, i):

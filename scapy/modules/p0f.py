@@ -1,7 +1,7 @@
+# SPDX-License-Identifier: GPL-2.0-only
 # This file is part of Scapy
-# See http://www.secdev.org/projects/scapy for more information
+# See https://scapy.net/ for more information
 # Copyright (C) Philippe Biondi <phil@secdev.org>
-# This program is published under a GPLv2 license
 
 """
 Clone of p0f v3 passive OS fingerprinting
@@ -22,8 +22,7 @@ from scapy.layers.http import HTTP, HTTPRequest, HTTPResponse
 from scapy.layers.inet6 import IPv6
 from scapy.volatile import RandByte, RandShort, RandString
 from scapy.error import warning
-from scapy.modules.six import integer_types, string_types
-from scapy.modules.six.moves import range
+from scapy.libs.six import integer_types, string_types
 
 _p0fpaths = ["/etc/p0f", "/usr/share/p0f", "/opt/local"]
 conf.p0f_base = select_path(_p0fpaths, "p0f.fp")

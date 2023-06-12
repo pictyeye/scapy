@@ -1,7 +1,7 @@
+# SPDX-License-Identifier: GPL-2.0-only
 # This file is part of Scapy
-# See http://www.secdev.org/projects/scapy for more information
+# See https://scapy.net/ for more information
 # Copyright (C) Philippe Biondi <phil@secdev.org>
-# This program is published under a GPLv2 license
 
 """
 Functions to send and receive packets.
@@ -34,7 +34,7 @@ from scapy.plist import (
 )
 from scapy.error import log_runtime, log_interactive, Scapy_Exception
 from scapy.base_classes import Gen, SetGen
-from scapy.modules import six
+from scapy.libs import six
 from scapy.sessions import DefaultSession
 from scapy.supersocket import SuperSocket, IterSocket
 
@@ -433,7 +433,7 @@ def send(x,  # type: _PacketIterable
     :param inter: time (in s) between two packets (default 0)
     :param loop: send packet indefinitely (default 0)
     :param count: number of packets to send (default None=1)
-    :param verbose: verbose mode (default None=conf.verbose)
+    :param verbose: verbose mode (default None=conf.verb)
     :param realtime: check that a packet was sent before sending the next one
     :param return_packets: return the sent packets
     :param socket: the socket to use (default is conf.L3socket(kargs))
@@ -465,7 +465,7 @@ def sendp(x,  # type: _PacketIterable
     :param inter: time (in s) between two packets (default 0)
     :param loop: send packet indefinitely (default 0)
     :param count: number of packets to send (default None=1)
-    :param verbose: verbose mode (default None=conf.verbose)
+    :param verbose: verbose mode (default None=conf.verb)
     :param realtime: check that a packet was sent before sending the next one
     :param return_packets: return the sent packets
     :param socket: the socket to use (default is conf.L3socket(kargs))
@@ -489,7 +489,7 @@ def sendpfast(x,  # type: _PacketIterable
               pps=None,  # type: Optional[float]
               mbps=None,  # type: Optional[float]
               realtime=False,  # type: bool
-              loop=0,  # type: int
+              loop=None,  # type: Optional[int]
               file_cache=False,  # type: bool
               iface=None,  # type: Optional[_GlobInterfaceType]
               replay_args=None,  # type: Optional[List[str]]
@@ -501,7 +501,8 @@ def sendpfast(x,  # type: _PacketIterable
     :param pps:  packets per second
     :param mbps: MBits per second
     :param realtime: use packet's timestamp, bending time with real-time value
-    :param loop: number of times to process the packet list
+    :param loop: number of times to process the packet list. 0 implies
+        infinite loop
     :param file_cache: cache packets in RAM instead of reading from
         disk at each iteration
     :param iface: output interface
@@ -522,7 +523,7 @@ def sendpfast(x,  # type: _PacketIterable
     else:
         argv.append("--topspeed")
 
-    if loop:
+    if loop is not None:
         argv.append("--loop=%i" % loop)
     if file_cache:
         argv.append("--preload-pcap")
@@ -552,7 +553,8 @@ def sendpfast(x,  # type: _PacketIterable
                 results = _parse_tcpreplay_result(stdout, stderr, argv)
             elif conf.verb > 2:
                 log_runtime.info(stdout.decode())
-    os.unlink(f)
+    if os.path.exists(f):
+        os.unlink(f)
     return results
 
 
@@ -613,26 +615,6 @@ def _parse_tcpreplay_result(stdout_b, stderr_b, argv):
         return {}
 
 
-@conf.commands.register
-def sr(x,  # type: _PacketIterable
-       promisc=None,  # type: Optional[bool]
-       filter=None,  # type: Optional[str]
-       iface=None,  # type: Optional[_GlobInterfaceType]
-       nofilter=0,  # type: int
-       *args,  # type: Any
-       **kargs  # type: Any
-       ):
-    # type: (...) -> Tuple[SndRcvList, PacketList]
-    """
-    Send and receive packets at layer 3
-    """
-    s = conf.L3socket(promisc=promisc, filter=filter,
-                      iface=iface, nofilter=nofilter)
-    result = sndrcv(s, x, *args, **kargs)
-    s.close()
-    return result
-
-
 def _interface_selection(iface,  # type: Optional[_GlobInterfaceType]
                          packet  # type: _PacketIterable
                          ):
@@ -652,24 +634,34 @@ def _interface_selection(iface,  # type: Optional[_GlobInterfaceType]
 
 
 @conf.commands.register
-def sr1(x,  # type: _PacketIterable
-        promisc=None,  # type: Optional[bool]
-        filter=None,  # type: Optional[str]
-        iface=None,  # type: Optional[_GlobInterfaceType]
-        nofilter=0,  # type: int
-        *args,  # type: Any
-        **kargs  # type: Any
-        ):
-    # type: (...) -> Optional[Packet]
+def sr(x,  # type: _PacketIterable
+       promisc=None,  # type: Optional[bool]
+       filter=None,  # type: Optional[str]
+       iface=None,  # type: Optional[_GlobInterfaceType]
+       nofilter=0,  # type: int
+       *args,  # type: Any
+       **kargs  # type: Any
+       ):
+    # type: (...) -> Tuple[SndRcvList, PacketList]
     """
-    Send packets at layer 3 and return only the first answer
+    Send and receive packets at layer 3
     """
     iface = _interface_selection(iface, x)
     s = conf.L3socket(promisc=promisc, filter=filter,
-                      nofilter=nofilter, iface=iface)
-    ans, _ = sndrcv(s, x, *args, **kargs)
+                      iface=iface, nofilter=nofilter)
+    result = sndrcv(s, x, *args, **kargs)
     s.close()
-    if len(ans) > 0:
+    return result
+
+
+@conf.commands.register
+def sr1(*args, **kargs):
+    # type: (*Packet, **Any) -> Optional[Packet]
+    """
+    Send packets at layer 3 and return only the first answer
+    """
+    ans, _ = sr(*args, **kargs)
+    if ans:
         return cast(Packet, ans[0][1])
     return None
 
@@ -771,6 +763,11 @@ def __sr_loop(srfunc,  # type: Callable[..., Tuple[SndRcvList, PacketList]]
                     print(" " * len(msg), end=' ')
             if verbose > 1 and not (prn or prnfail):
                 print("recv:%i  fail:%i" % tuple(map(len, res[:2])))
+            if verbose == 1:
+                if res[0]:
+                    os.write(1, b"*")
+                if res[1]:
+                    os.write(1, b".")
             if store:
                 ans += res[0]
                 unans += res[1]
@@ -1177,7 +1174,7 @@ class AsyncSniffer(object):
         # Get select information from the sockets
         _main_socket = next(iter(sniff_sockets))
         select_func = _main_socket.select
-        nonblocking_socket = _main_socket.nonblocking_socket
+        nonblocking_socket = getattr(_main_socket, "nonblocking_socket", False)
         # We check that all sockets use the same select(), or raise a warning
         if not all(select_func == sock.select for sock in sniff_sockets):
             warning("Warning: inconsistent socket types ! "
@@ -1263,6 +1260,10 @@ class AsyncSniffer(object):
                 # Removed dead sockets
                 for s in dead_sockets:
                     del sniff_sockets[s]
+                    if len(sniff_sockets) == 1 and \
+                            close_pipe in sniff_sockets:  # type: ignore
+                        # Only the close_pipe left
+                        del sniff_sockets[close_pipe]  # type: ignore
         except KeyboardInterrupt:
             pass
         self.running = False

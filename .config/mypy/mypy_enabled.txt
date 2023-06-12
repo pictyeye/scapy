@@ -11,8 +11,13 @@ scapy/all.py
 scapy/ansmachine.py
 scapy/arch/__init__.py
 scapy/arch/common.py
+scapy/arch/libpcap.py
 scapy/arch/linux.py
 scapy/arch/unix.py
+scapy/arch/solaris.py
+scapy/arch/windows/__init__.py
+scapy/arch/windows/native.py
+scapy/arch/windows/structures.py
 scapy/as_resolvers.py
 scapy/asn1/__init__.py
 scapy/asn1/asn1.py
@@ -29,7 +34,6 @@ scapy/consts.py
 scapy/dadict.py
 scapy/data.py
 scapy/error.py
-scapy/extlib.py
 scapy/fields.py
 scapy/interfaces.py
 scapy/main.py
@@ -80,6 +84,10 @@ scapy/contrib/isotp/isotp_scanner.py
 scapy/contrib/isotp/isotp_soft_socket.py
 scapy/contrib/isotp/isotp_utils.py
 scapy/contrib/roce.py
+scapy/contrib/tcpao.py
 
 # TEST
 test/testsocket.py
+
+# TOOLS
+scapy/tools/automotive/isotpscanner.py

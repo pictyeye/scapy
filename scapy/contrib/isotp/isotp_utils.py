@@ -1,9 +1,9 @@
+# SPDX-License-Identifier: GPL-2.0-only
 # This file is part of Scapy
-# See http://www.secdev.org/projects/scapy for more information
+# See https://scapy.net/ for more information
 # Copyright (C) Nils Weiss <nils@we155.de>
 # Copyright (C) Enrico Pozzobon <enricopozzobon@gmail.com>
 # Copyright (C) Alexander Schroeder <alexander1.schroeder@st.othr.de>
-# This program is published under a GPLv2 license
 
 # scapy.contrib.description = ISO-TP (ISO 15765-2) Utilities
 # scapy.contrib.status = library
@@ -17,7 +17,7 @@ from scapy.packet import Packet
 from scapy.sessions import DefaultSession
 from scapy.contrib.isotp.isotp_packet import ISOTP, N_PCI_CF, N_PCI_SF, \
     N_PCI_FF, N_PCI_FC
-import scapy.modules.six as six
+import scapy.libs.six as six
 
 
 class ISOTPMessageBuilderIter(object):

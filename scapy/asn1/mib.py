@@ -8,16 +8,14 @@
 Management Information Base (MIB) parsing
 """
 
-from __future__ import absolute_import
 import re
 from glob import glob
 from scapy.dadict import DADict, fixname
 from scapy.config import conf
 from scapy.utils import do_graph
-import scapy.libs.six as six
 from scapy.compat import plain_str
 
-from scapy.compat import (
+from typing import (
     Any,
     Dict,
     List,
@@ -48,7 +46,7 @@ class MIBDict(DADict[str, str]):
         max = 0
         root = "."
         root_key = ""
-        for k in six.iterkeys(self):
+        for k in self:
             if x.startswith(k + "."):
                 if max < len(k):
                     max = len(k)
@@ -69,9 +67,9 @@ class MIBDict(DADict[str, str]):
         p = len(xl) - 1
         while p >= 0 and _mib_re_integer.match(xl[p]):
             p -= 1
-        if p != 0 or xl[p] not in six.itervalues(self.d):
+        if p != 0 or xl[p] not in self.d.values():
             return x
-        xl[p] = next(k for k, v in six.iteritems(self.d) if v == xl[p])
+        xl[p] = next(k for k, v in self.d.items() if v == xl[p])
         return ".".join(xl[p:])
 
     def _make_graph(self, other_keys=None, **kargs):
@@ -164,7 +162,7 @@ def load_mib(filenames):
     unresolved = {}  # type: Dict[str, List[str]]
     alias = {}  # type: Dict[str, str]
     # Export the current MIB to a working dictionary
-    for k in six.iterkeys(conf.mib):
+    for k in conf.mib:
         _mib_register(conf.mib[k], k.split("."), the_mib, unresolved, alias)
 
     # Read the files
@@ -193,14 +191,14 @@ def load_mib(filenames):
     # Create the new MIB
     newmib = MIBDict(_name="MIB")
     # Add resolved values
-    for oid, key in six.iteritems(the_mib):
+    for oid, key in the_mib.items():
         newmib[".".join(key)] = oid
     # Add unresolved values
-    for oid, key in six.iteritems(unresolved):
+    for oid, key in unresolved.items():
         newmib[".".join(key)] = oid
     # Add aliases
-    for key, oid in six.iteritems(alias):
-        newmib[key] = oid
+    for key_s, oid in alias.items():
+        newmib[key_s] = oid
 
     conf.mib = newmib
 
@@ -614,11 +612,13 @@ evPolicy_oids = {
     '2.16.840.1.114414.1.7.24.3': 'EV Starfield Service Certificate Authority'
 }
 
-#
+#       gssapi       #
 
 gssapi_oids = {
     '1.2.840.48018.1.2.2': 'MS KRB5 - Microsoft Kerberos 5',
     '1.2.840.113554.1.2.2': 'Kerberos 5',
+    '1.2.840.113554.1.2.2.3': 'Kerberos 5 - User to User',
+    '1.3.6.1.5.2.5': 'Kerberos 5 - IAKERB',
     '1.3.6.1.5.5.2': 'SPNEGO - Simple Protected Negotiation',
     '1.3.6.1.4.1.311.2.2.10': 'NTLMSSP - Microsoft NTLM Security Support Provider',
     '1.3.6.1.4.1.311.2.2.30': 'NEGOEX - SPNEGO Extended Negotiation Security Mechanism',

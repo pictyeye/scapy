@@ -9,7 +9,6 @@
 Fields that hold random numbers.
 """
 
-from __future__ import absolute_import
 import copy
 import random
 import time
@@ -23,7 +22,7 @@ from scapy.base_classes import Net
 from scapy.compat import bytes_encode, chb, plain_str
 from scapy.utils import corrupt_bits, corrupt_bytes
 
-from scapy.compat import (
+from typing import (
     List,
     TypeVar,
     Generic,
@@ -109,9 +108,12 @@ class VolatileValue(Generic[_T]):
         # type: () -> str
         return ''
 
-    def command(self):
-        # type: () -> str
-        return "%s(%s)" % (self.__class__.__name__, self._command_args())
+    def command(self, json=False):
+        # type: (bool) -> Union[Dict[str, str], str]
+        if json:
+            return {"type": self.__class__.__name__, "value": self._command_args()}
+        else:
+            return "%s(%s)" % (self.__class__.__name__, self._command_args())
 
     def __eq__(self, other):
         # type: (Any) -> bool
@@ -509,12 +511,12 @@ class _RandString(RandField[_S], Generic[_S]):
         return self._fix() * n
 
 
-class RandString(_RandString[bytes]):
+class RandString(_RandString[str]):
     _DEFAULT_CHARS = (string.ascii_uppercase + string.ascii_lowercase +
-                      string.digits).encode("utf-8")
+                      string.digits)
 
     def __init__(self, size=None, chars=_DEFAULT_CHARS):
-        # type: (Optional[Union[int, RandNum]], bytes) -> None
+        # type: (Optional[Union[int, RandNum]], str) -> None
         if size is None:
             size = RandNumExpo(0.01)
         self.size = size
@@ -534,21 +536,22 @@ class RandString(_RandString[bytes]):
         return ret
 
     def _fix(self):
-        # type: () -> bytes
-        s = b""
+        # type: () -> str
+        s = ""
         for _ in range(int(self.size)):
-            rdm_chr = random.choice(self.chars)
-            s += rdm_chr if isinstance(rdm_chr, str) else chb(rdm_chr)
+            s += random.choice(self.chars)
         return s
 
 
-class RandBin(RandString):
-    def __init__(self, size=None):
-        # type: (Optional[Union[int, RandNum]]) -> None
-        super(RandBin, self).__init__(
-            size=size,
-            chars=b"".join(chb(c) for c in range(256))
-        )
+class RandBin(_RandString[bytes]):
+    _DEFAULT_CHARS = b"".join(chb(c) for c in range(256))
+
+    def __init__(self, size=None, chars=_DEFAULT_CHARS):
+        # type: (Optional[Union[int, RandNum]], bytes) -> None
+        if size is None:
+            size = RandNumExpo(0.01)
+        self.size = size
+        self.chars = chars
 
     def _command_args(self):
         # type: () -> str
@@ -560,6 +563,13 @@ class RandBin(RandString):
             # Default size for RandString, skip
             return ""
         return "size=%r" % self.size.command()
+
+    def _fix(self):
+        # type: () -> bytes
+        s = b""
+        for _ in range(int(self.size)):
+            s += struct.pack("!B", random.choice(self.chars))
+        return s
 
 
 class RandTermString(RandBin):
@@ -1190,7 +1200,7 @@ class RandUUID(RandField[uuid.UUID]):
             else:
                 # Invalid template
                 raise ValueError("UUID template is invalid")
-            rnd_f = [RandInt] + [RandShort] * 2 + [RandByte] * 8  # type: ignore  # noqa: E501
+            rnd_f = [RandInt] + [RandShort] * 2 + [RandByte] * 8
             uuid_template = []  # type: List[Union[int, RandNum]]
             for i, t in enumerate(template):
                 if t == "*":

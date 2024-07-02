@@ -2,7 +2,7 @@
 # This file is part of Scapy
 # See https://scapy.net/ for more information
 # Copyright (C) Philippe Biondi <phil@secdev.org>
-# Copyright (C) Gabriel Potter <gabriel[]potter[]fr>
+# Copyright (C) Gabriel Potter
 
 """
 Automata with states, transitions and actions.
@@ -16,6 +16,7 @@ import itertools
 import logging
 import os
 import random
+import socket
 import sys
 import threading
 import time
@@ -26,19 +27,19 @@ import select
 from collections import deque
 
 from scapy.config import conf
-from scapy.utils import do_graph
-from scapy.error import log_runtime, warning
-from scapy.plist import PacketList
-from scapy.data import MTU
-from scapy.supersocket import SuperSocket
-from scapy.packet import Packet
 from scapy.consts import WINDOWS
-import scapy.libs.six as six
+from scapy.data import MTU
+from scapy.error import log_runtime, warning
+from scapy.interfaces import _GlobInterfaceType
+from scapy.packet import Packet
+from scapy.plist import PacketList
+from scapy.supersocket import SuperSocket, StreamSocket
+from scapy.utils import do_graph
 
-from scapy.compat import (
+# Typing imports
+from typing import (
     Any,
     Callable,
-    DecoratorCallable,
     Deque,
     Dict,
     Generic,
@@ -51,9 +52,9 @@ from scapy.compat import (
     Type,
     TypeVar,
     Union,
-    _Generic_metaclass,
     cast,
 )
+from scapy.compat import DecoratorCallable
 
 
 def select_objects(inputs, remain):
@@ -78,7 +79,7 @@ def select_objects(inputs, remain):
         [b]
 
     :param inputs: objects to process
-    :param remain: timeout. If 0, return [].
+    :param remain: timeout. If 0, poll. If None, block.
     """
     if not WINDOWS:
         return select.select(inputs, [], [], remain)[0]
@@ -98,6 +99,9 @@ def select_objects(inputs, remain):
             events.append(i)
     if natives:
         results = results.union(set(select.select(natives, [], [], remain)[0]))
+        if results:
+            # We have native results, poll.
+            remain = 0
     if events:
         # 0xFFFFFFFF = INFINITE
         remainms = int(remain * 1000 if remain is not None else 0xFFFFFFFF)
@@ -135,7 +139,6 @@ def select_objects(inputs, remain):
 _T = TypeVar("_T")
 
 
-@six.add_metaclass(_Generic_metaclass)
 class ObjectPipe(Generic[_T]):
     def __init__(self, name=None):
         # type: (Optional[str]) -> None
@@ -176,7 +179,7 @@ class ObjectPipe(Generic[_T]):
         return self.__rd
 
     def send(self, obj):
-        # type: (Union[_T]) -> int
+        # type: (_T) -> int
         self.__queue.append(obj)
         if WINDOWS:
             self._winset()
@@ -195,11 +198,13 @@ class ObjectPipe(Generic[_T]):
         # type: () -> None
         pass
 
-    def recv(self, n=0):
-        # type: (Optional[int]) -> Optional[_T]
+    def recv(self, n=0, options=socket.MsgFlag(0)):
+        # type: (Optional[int], socket.MsgFlag) -> Optional[_T]
         if self.closed:
+            raise EOFError
+        if options & socket.MSG_PEEK:
             if self.__queue:
-                return self.__queue.popleft()
+                return self.__queue[0]
             return None
         os.read(self.__rd, 1)
         elt = self.__queue.popleft()
@@ -220,11 +225,15 @@ class ObjectPipe(Generic[_T]):
     def close(self):
         # type: () -> None
         if not self.closed:
+            self.closed = True
             os.close(self.__rd)
             os.close(self.__wr)
             if WINDOWS:
-                self._winclose()
-            self.closed = True
+                try:
+                    self._winclose()
+                except ImportError:
+                    # Python is shutting down
+                    pass
 
     def __repr__(self):
         # type: () -> str
@@ -240,7 +249,7 @@ class ObjectPipe(Generic[_T]):
         # Only handle ObjectPipes
         results = []
         for s in sockets:
-            if s.closed:
+            if s.closed:  # allow read to trigger EOF
                 results.append(s)
         if results:
             return results
@@ -260,9 +269,11 @@ class Message:
 
     def __repr__(self):
         # type: () -> str
-        return "<Message %s>" % " ".join("%s=%r" % (k, v)
-                                         for (k, v) in six.iteritems(self.__dict__)  # noqa: E501
-                                         if not k.startswith("_"))
+        return "<Message %s>" % " ".join(
+            "%s=%r" % (k, v)
+            for k, v in self.__dict__.items()
+            if not k.startswith("_")
+        )
 
 
 class Timer():
@@ -364,11 +375,11 @@ class _TimerList():
         return lst
 
     def until_next(self):
-        # type: () -> float
+        # type: () -> Optional[float]
         try:
             return min([t._remaining() for t in self.timers if t._running()])
         except ValueError:
-            return 0
+            return None  # None means blocking
 
     def count(self):
         # type: () -> int
@@ -444,6 +455,7 @@ class ATMT:
     CONDITION = "Condition"
     RECV = "Receive condition"
     TIMEOUT = "Timeout condition"
+    EOF = "EOF condition"
     IOEVENT = "I/O event"
 
     class NewStateRequested(Exception):
@@ -577,12 +589,23 @@ class ATMT:
     @staticmethod
     def timer(state, timeout, prio=0):
         # type: (_StateWrapper, Union[float, int], int) -> Callable[[_StateWrapper, _StateWrapper, Timer], _StateWrapper]  # noqa: E501
-        def deco(f, state=state, timeout=Timer(timeout, prio=prio, autoreload=True)):  # noqa: E501
+        def deco(f, state=state, timeout=Timer(timeout, prio=prio, autoreload=True)):
             # type: (_StateWrapper, _StateWrapper, Timer) -> _StateWrapper
             f.atmt_type = ATMT.TIMEOUT
             f.atmt_state = state.atmt_state
             f.atmt_timeout = timeout
             f.atmt_timeout._func = f
+            f.atmt_condname = f.__name__
+            return f
+        return deco
+
+    @staticmethod
+    def eof(state):
+        # type: (_StateWrapper) -> Callable[[_StateWrapper, _StateWrapper], _StateWrapper]  # noqa: E501
+        def deco(f, state=state):
+            # type: (_StateWrapper, _StateWrapper) -> _StateWrapper
+            f.atmt_type = ATMT.EOF
+            f.atmt_state = state.atmt_state
             f.atmt_condname = f.__name__
             return f
         return deco
@@ -618,28 +641,29 @@ class _ATMT_supersocket(SuperSocket):
         self.ioevent = ioevent
         self.proto = proto
         # write, read
-        self.spa, self.spb = ObjectPipe[bytes]("spa"), \
-            ObjectPipe[bytes]("spb")
+        self.spa, self.spb = ObjectPipe[Any]("spa"), \
+            ObjectPipe[Any]("spb")
         kargs["external_fd"] = {ioevent: (self.spa, self.spb)}
         kargs["is_atmt_socket"] = True
+        kargs["atmt_socket"] = self.name
         self.atmt = automaton(*args, **kargs)
         self.atmt.runbg()
 
     def send(self, s):
-        # type: (bytes) -> int
-        if not isinstance(s, bytes):
-            s = bytes(s)
+        # type: (Any) -> int
         return self.spa.send(s)
 
     def fileno(self):
         # type: () -> int
         return self.spb.fileno()
 
-    def recv(self, n=MTU):
-        # type: (Optional[int]) -> Any
+    # note: _ATMT_supersocket may return bytes in certain cases, which
+    # is expected. We cheat on typing.
+    def recv(self, n=MTU, **kwargs):  # type: ignore
+        # type: (int, **Any) -> Any
         r = self.spb.recv(n)
         if self.proto is not None and r is not None:
-            r = self.proto(r)
+            r = self.proto(r, **kwargs)
         return r
 
     def close(self):
@@ -683,9 +707,10 @@ class Automaton_metaclass(type):
         cls.conditions = {}         # type: Dict[str, List[_StateWrapper]]
         cls.ioevents = {}           # type: Dict[str, List[_StateWrapper]]
         cls.timeout = {}            # type: Dict[str, _TimerList]
+        cls.eofs = {}               # type: Dict[str, _StateWrapper]
         cls.actions = {}            # type: Dict[str, List[_StateWrapper]]
         cls.initial_states = []     # type: List[_StateWrapper]
-        cls.stop_states = []        # type: List[_StateWrapper]
+        cls.stop_state = None       # type: Optional[_StateWrapper]
         cls.ionames = []
         cls.iosupersockets = []
 
@@ -694,11 +719,11 @@ class Automaton_metaclass(type):
         while classes:
             c = classes.pop(0)  # order is important to avoid breaking method overloading  # noqa: E501
             classes += list(c.__bases__)
-            for k, v in six.iteritems(c.__dict__):
+            for k, v in c.__dict__.items():  # type: ignore
                 if k not in members:
                     members[k] = v
 
-        decorated = [v for v in six.itervalues(members)
+        decorated = [v for v in members.values()
                      if hasattr(v, "atmt_type")]
 
         for m in decorated:
@@ -712,8 +737,10 @@ class Automaton_metaclass(type):
                 if m.atmt_initial:
                     cls.initial_states.append(m)
                 if m.atmt_stop:
-                    cls.stop_states.append(m)
-            elif m.atmt_type in [ATMT.CONDITION, ATMT.RECV, ATMT.TIMEOUT, ATMT.IOEVENT]:  # noqa: E501
+                    if cls.stop_state is not None:
+                        raise ValueError("There can only be a single stop state !")
+                    cls.stop_state = m
+            elif m.atmt_type in [ATMT.CONDITION, ATMT.RECV, ATMT.TIMEOUT, ATMT.IOEVENT, ATMT.EOF]:  # noqa: E501
                 cls.actions[m.atmt_condname] = []
 
         for m in decorated:
@@ -721,6 +748,8 @@ class Automaton_metaclass(type):
                 cls.conditions[m.atmt_state].append(m)
             elif m.atmt_type == ATMT.RECV:
                 cls.recv_conditions[m.atmt_state].append(m)
+            elif m.atmt_type == ATMT.EOF:
+                cls.eofs[m.atmt_state] = m
             elif m.atmt_type == ATMT.IOEVENT:
                 cls.ioevents[m.atmt_state].append(m)
                 cls.ionames.append(m.atmt_ioname)
@@ -732,11 +761,13 @@ class Automaton_metaclass(type):
                 for co in m.atmt_cond:
                     cls.actions[co].append(m)
 
-        for v in itertools.chain(six.itervalues(cls.conditions),
-                                 six.itervalues(cls.recv_conditions),
-                                 six.itervalues(cls.ioevents)):
+        for v in itertools.chain(
+            cls.conditions.values(),
+            cls.recv_conditions.values(),
+            cls.ioevents.values()
+        ):
             v.sort(key=lambda x: x.atmt_prio)
-        for condname, actlst in six.iteritems(cls.actions):
+        for condname, actlst in cls.actions.items():
             actlst.sort(key=lambda x: x.atmt_cond[condname])
 
         for ioev in cls.iosupersockets:
@@ -760,7 +791,7 @@ class Automaton_metaclass(type):
         s = 'digraph "%s" {\n' % self.__class__.__name__
 
         se = ""  # Keep initial nodes at the beginning for better rendering
-        for st in six.itervalues(self.states):
+        for st in self.states.values():
             if st.atmt_initial:
                 se = ('\t"%s" [ style=filled, fillcolor=blue, shape=box, root=true];\n' % st.atmt_state) + se  # noqa: E501
             elif st.atmt_final:
@@ -771,22 +802,48 @@ class Automaton_metaclass(type):
                 se += '\t"%s" [ style=filled, fillcolor=orange, shape=box, root=true ];\n' % st.atmt_state  # noqa: E501
         s += se
 
-        for st in six.itervalues(self.states):
-            for n in st.atmt_origfunc.__code__.co_names + st.atmt_origfunc.__code__.co_consts:  # noqa: E501
+        for st in self.states.values():
+            names = list(
+                st.atmt_origfunc.__code__.co_names +
+                st.atmt_origfunc.__code__.co_consts
+            )
+            while names:
+                n = names.pop()
                 if n in self.states:
-                    s += '\t"%s" -> "%s" [ color=green ];\n' % (st.atmt_state, n)  # noqa: E501
+                    s += '\t"%s" -> "%s" [ color=green ];\n' % (st.atmt_state, n)
+                elif n in self.__dict__:
+                    # function indirection
+                    if callable(self.__dict__[n]):
+                        names.extend(self.__dict__[n].__code__.co_names)
+                        names.extend(self.__dict__[n].__code__.co_consts)
 
-        for c, k, v in ([("purple", k, v) for k, v in self.conditions.items()] +  # noqa: E501
-                        [("red", k, v) for k, v in self.recv_conditions.items()] +  # noqa: E501
-                        [("orange", k, v) for k, v in self.ioevents.items()]):
+        for c, sty, k, v in (
+            [("purple", "solid", k, v) for k, v in self.conditions.items()] +
+            [("red", "solid", k, v) for k, v in self.recv_conditions.items()] +
+            [("orange", "solid", k, v) for k, v in self.ioevents.items()] +
+            [("black", "dashed", k, [v]) for k, v in self.eofs.items()]
+        ):
             for f in v:
-                for n in f.__code__.co_names + f.__code__.co_consts:
+                names = list(f.__code__.co_names + f.__code__.co_consts)
+                while names:
+                    n = names.pop()
                     if n in self.states:
                         line = f.atmt_condname
                         for x in self.actions[f.atmt_condname]:
                             line += "\\l>[%s]" % x.__name__
-                        s += '\t"%s" -> "%s" [label="%s", color=%s];\n' % (k, n, line, c)  # noqa: E501
-        for k, timers in six.iteritems(self.timeout):
+                        s += '\t"%s" -> "%s" [label="%s", color=%s, style=%s];\n' % (
+                            k,
+                            n,
+                            line,
+                            c,
+                            sty,
+                        )
+                    elif n in self.__dict__:
+                        # function indirection
+                        if callable(self.__dict__[n]) and hasattr(self.__dict__[n], "__code__"):  # noqa: E501
+                            names.extend(self.__dict__[n].__code__.co_names)
+                            names.extend(self.__dict__[n].__code__.co_consts)
+        for k, timers in self.timeout.items():
             for timer in timers:
                 for n in (timer._func.__code__.co_names +
                           timer._func.__code__.co_consts):
@@ -805,27 +862,40 @@ class Automaton_metaclass(type):
         return do_graph(s, **kargs)
 
 
-@six.add_metaclass(Automaton_metaclass)
-class Automaton:
+class Automaton(metaclass=Automaton_metaclass):
     states = {}             # type: Dict[str, _StateWrapper]
     state = None            # type: ATMT.NewStateRequested
     recv_conditions = {}    # type: Dict[str, List[_StateWrapper]]
     conditions = {}         # type: Dict[str, List[_StateWrapper]]
+    eofs = {}               # type: Dict[str, _StateWrapper]
     ioevents = {}           # type: Dict[str, List[_StateWrapper]]
     timeout = {}            # type: Dict[str, _TimerList]
     actions = {}            # type: Dict[str, List[_StateWrapper]]
     initial_states = []     # type: List[_StateWrapper]
-    stop_states = []        # type: List[_StateWrapper]
+    stop_state = None       # type: Optional[_StateWrapper]
     ionames = []            # type: List[str]
     iosupersockets = []     # type: List[SuperSocket]
+
+    # used for spawn()
+    pkt_cls = conf.raw_layer
+    socketcls = StreamSocket
 
     # Internals
     def __init__(self, *args, **kargs):
         # type: (Any, Any) -> None
         external_fd = kargs.pop("external_fd", {})
-        self.send_sock_class = kargs.pop("ll", conf.L3socket)
-        self.recv_sock_class = kargs.pop("recvsock", conf.L2listen)
+        if "sock" in kargs:
+            # We use a bi-directional sock
+            self.sock = kargs["sock"]
+        else:
+            # Separate sockets
+            self.sock = None
+            self.send_sock_class = kargs.pop("ll", conf.L3socket)
+            self.recv_sock_class = kargs.pop("recvsock", conf.L2listen)
+        self.listen_sock = None  # type: Optional[SuperSocket]
+        self.send_sock = None  # type: Optional[SuperSocket]
         self.is_atmt_socket = kargs.pop("is_atmt_socket", False)
+        self.atmt_socket = kargs.pop("atmt_socket", None)
         self.started = threading.Lock()
         self.threadid = None                # type: Optional[int]
         self.breakpointed = None
@@ -869,7 +939,7 @@ class Automaton:
 
         self.start()
 
-    def parse_args(self, debug=0, store=1, **kargs):
+    def parse_args(self, debug=0, store=0, **kargs):
         # type: (int, int, Any) -> None
         self.debug_level = debug
         if debug:
@@ -877,17 +947,107 @@ class Automaton:
         self.socket_kargs = kargs
         self.store_packets = store
 
+    @classmethod
+    def spawn(cls,
+              port: int,
+              iface: Optional[_GlobInterfaceType] = None,
+              bg: bool = False,
+              **kwargs: Any) -> Optional[socket.socket]:
+        """
+        Spawn a TCP server that listens for connections and start the automaton
+        for each new client.
+
+        :param port: the port to listen to
+        :param bg: background mode? (default: False)
+        """
+        from scapy.arch import get_if_addr
+        # create server sock and bind it
+        ssock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        local_ip = get_if_addr(iface or conf.iface)
+        try:
+            ssock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        except OSError:
+            pass
+        ssock.bind((local_ip, port))
+        ssock.listen(5)
+        clients = []
+        if kwargs.get("verb", True):
+            print(conf.color_theme.green(
+                "Server %s started listening on %s" % (
+                    cls.__name__,
+                    (local_ip, port),
+                )
+            ))
+
+        def _run() -> None:
+            # Wait for clients forever
+            try:
+                while True:
+                    clientsocket, address = ssock.accept()
+                    if kwargs.get("verb", True):
+                        print(conf.color_theme.gold(
+                            "\u2503 Connection received from %s" % repr(address)
+                        ))
+                    # Start atmt class with socket
+                    sock = cls.socketcls(clientsocket, cls.pkt_cls)
+                    atmt_server = cls(
+                        sock=sock,
+                        iface=iface, **kwargs
+                    )
+                    clients.append((atmt_server, clientsocket))
+                    # start atmt
+                    atmt_server.runbg()
+            except KeyboardInterrupt:
+                print("X Exiting.")
+                ssock.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                print("X Server closed.")
+            finally:
+                for atmt, clientsocket in clients:
+                    try:
+                        atmt.forcestop(wait=False)
+                    except Exception:
+                        pass
+                    try:
+                        clientsocket.shutdown(socket.SHUT_RDWR)
+                        clientsocket.close()
+                    except Exception:
+                        pass
+                ssock.close()
+        if bg:
+            # Background
+            threading.Thread(target=_run).start()
+            return ssock
+        else:
+            # Non-background
+            _run()
+            return None
+
     def master_filter(self, pkt):
         # type: (Packet) -> bool
         return True
 
-    def my_send(self, pkt):
-        # type: (Packet) -> None
-        self.send_sock.send(pkt)
+    def my_send(self, pkt, **kwargs):
+        # type: (Packet, **Any) -> None
+        if not self.send_sock:
+            raise ValueError("send_sock is None !")
+        self.send_sock.send(pkt, **kwargs)
+
+    def update_sock(self, sock):
+        # type: (SuperSocket) -> None
+        """
+        Update the socket used by the automata.
+        Typically used in an eof event to reconnect.
+        """
+        self.sock = sock
+        if self.listen_sock is not None:
+            self.listen_sock = self.sock
+        if self.send_sock:
+            self.send_sock = self.sock
 
     def timer_by_name(self, name):
         # type: (str) -> Optional[Timer]
-        for _, timers in six.iteritems(self.timeout):
+        for _, timers in self.timeout.items():
             for timer in timers:  # type: Timer
                 if timer._func.atmt_condname == name:
                     return timer
@@ -900,35 +1060,33 @@ class Automaton:
                      wr  # type: Union[int, ObjectPipe[bytes], None]
                      ):
             # type: (...) -> None
-            if rd is not None and not isinstance(rd, (int, ObjectPipe)):
-                rd = rd.fileno()  # type: ignore
-            if wr is not None and not isinstance(wr, (int, ObjectPipe)):
-                wr = wr.fileno()  # type: ignore
             self.rd = rd
             self.wr = wr
+            if isinstance(self.rd, socket.socket):
+                self.__selectable_force_select__ = True
 
         def fileno(self):
             # type: () -> int
-            if isinstance(self.rd, ObjectPipe):
-                return self.rd.fileno()
-            elif isinstance(self.rd, int):
+            if isinstance(self.rd, int):
                 return self.rd
+            elif self.rd:
+                return self.rd.fileno()
             return 0
 
         def read(self, n=65535):
             # type: (int) -> Optional[bytes]
-            if isinstance(self.rd, ObjectPipe):
-                return self.rd.recv(n)
-            elif isinstance(self.rd, int):
+            if isinstance(self.rd, int):
                 return os.read(self.rd, n)
+            elif self.rd:
+                return self.rd.recv(n)
             return None
 
         def write(self, msg):
             # type: (bytes) -> int
-            if isinstance(self.wr, ObjectPipe):
-                return self.wr.send(msg)
-            elif isinstance(self.wr, int):
+            if isinstance(self.wr, int):
                 return os.write(self.wr, msg)
+            elif self.wr:
+                return self.wr.send(msg)
             return 0
 
         def recv(self, n=65535):
@@ -997,8 +1155,8 @@ class Automaton:
 
     class InterceptionPoint(AutomatonStopped):
         def __init__(self, msg, state=None, result=None, packet=None):
-            # type: (str, Optional[Message], Optional[str], Optional[str]) -> None  # noqa: E501
-            Automaton.AutomatonStopped.__init__(self, msg, state=state, result=result)  # noqa: E501
+            # type: (str, Optional[Message], Optional[str], Optional[Packet]) -> None
+            Automaton.AutomatonStopped.__init__(self, msg, state=state, result=result)
             self.packet = packet
 
     class CommandMessage(AutomatonException):
@@ -1010,8 +1168,12 @@ class Automaton:
         if self.debug_level >= lvl:
             log_runtime.debug(msg)
 
-    def send(self, pkt):
-        # type: (Packet) -> None
+    def isrunning(self):
+        # type: () -> bool
+        return self.started.locked()
+
+    def send(self, pkt, **kwargs):
+        # type: (Packet, **Any) -> None
         if self.state.state in self.interception_points:
             self.debug(3, "INTERCEPT: packet intercepted: %s" % pkt.summary())
             self.intercepted_packet = pkt
@@ -1034,7 +1196,7 @@ class Automaton:
                 self.debug(3, "INTERCEPT: packet accepted")
             else:
                 raise self.AutomatonError("INTERCEPT: unknown verdict: %r" % cmd.type)  # noqa: E501
-        self.my_send(pkt)
+        self.my_send(pkt, **kwargs)
         self.debug(3, "SENT : %s" % pkt.summary())
 
         if self.store_packets:
@@ -1046,7 +1208,6 @@ class Automaton:
 
     def __del__(self):
         # type: () -> None
-        self.stop()
         self.destroy()
 
     def _run_condition(self, cond, *args, **kargs):
@@ -1097,12 +1258,10 @@ class Automaton:
 
             # Start the automaton
             self.state = self.initial_states[0](self)
-            self.send_sock = self.send_sock_class(**self.socket_kargs)
+            self.send_sock = self.sock or self.send_sock_class(**self.socket_kargs)
             if self.recv_conditions:
                 # Only start a receiving socket if we have at least one recv_conditions
-                self.listen_sock = self.recv_sock_class(**self.socket_kargs)
-            else:
-                self.listen_sock = None
+                self.listen_sock = self.sock or self.recv_sock_class(**self.socket_kargs)  # noqa: E501
             self.packets = PacketList(name="session[%s]" % self.__class__.__name__)
 
             singlestep = True
@@ -1123,9 +1282,9 @@ class Automaton:
                     elif c.type == _ATMT_Command.FREEZE:
                         continue
                     elif c.type == _ATMT_Command.STOP:
-                        if self.stop_states:
+                        if self.stop_state:
                             # There is a stop state
-                            self.state = self.stop_states[0](self)
+                            self.state = self.stop_state()
                             iterator = self._do_iter()
                         else:
                             # Act as FORCESTOP
@@ -1155,9 +1314,9 @@ class Automaton:
                 self.cmdout.send(m)
             self.debug(3, "Stopping control thread (tid=%i)" % self.threadid)
             self.threadid = None
-            if getattr(self, "listen_sock", None):
+            if self.listen_sock:
                 self.listen_sock.close()
-            if getattr(self, "send_sock", None):
+            if self.send_sock:
                 self.send_sock.close()
 
     def _do_iter(self):
@@ -1205,9 +1364,11 @@ class Automaton:
                 timers.reset()
                 time_previous = time.time()
 
-                fds = [self.cmdin]
+                fds = [self.cmdin]  # type: List[Union[SuperSocket, ObjectPipe[Any]]]
+                select_func = select_objects
                 if self.listen_sock and self.recv_conditions[self.state.state]:
                     fds.append(self.listen_sock)
+                    select_func = self.listen_sock.select  # type: ignore
                 for ioev in self.ioevents[self.state.state]:
                     fds.append(self.ioin[ioev.atmt_ioname])
                 while True:
@@ -1219,14 +1380,32 @@ class Automaton:
                     remain = timers.until_next()
 
                     self.debug(5, "Select on %r" % fds)
-                    r = select_objects(fds, remain)
+                    r = select_func(fds, remain)
                     self.debug(5, "Selected %r" % r)
                     for fd in r:
                         self.debug(5, "Looking at %r" % fd)
                         if fd == self.cmdin:
                             yield self.CommandMessage("Received command message")  # noqa: E501
                         elif fd == self.listen_sock:
-                            pkt = self.listen_sock.recv(MTU)
+                            try:
+                                pkt = self.listen_sock.recv()
+                            except EOFError:
+                                # Socket was closed abruptly. This will likely only
+                                # ever happen when a client socket is passed to the
+                                # automaton (not the case when the automaton is
+                                # listening on a promiscuous conf.L2sniff)
+                                self.listen_sock.close()
+                                # False so that it is still reset by update_sock
+                                self.listen_sock = False  # type: ignore
+                                fds.remove(fd)
+                                if self.state.state in self.eofs:
+                                    # There is an eof state
+                                    eof = self.eofs[self.state.state]
+                                    self.debug(2, "Condition EOF [%s] taken" % eof.__name__)  # noqa: E501
+                                    raise self.eofs[self.state.state](self)
+                                else:
+                                    # There isn't. Therefore, it's a closing condition.
+                                    raise EOFError("Socket ended arbruptly.")
                             if pkt is not None:
                                 if self.master_filter(pkt):
                                     self.debug(3, "RECVD: %s" % pkt.summary())  # noqa: E501
@@ -1249,7 +1428,7 @@ class Automaton:
         # type: () -> str
         return "<Automaton %s [%s]>" % (
             self.__class__.__name__,
-            ["HALTED", "RUNNING"][self.started.locked()]
+            ["HALTED", "RUNNING"][self.isrunning()]
         )
 
     # Public API
@@ -1283,7 +1462,7 @@ class Automaton:
 
     def start(self, *args, **kargs):
         # type: (Any, Any) -> None
-        if self.started.locked():
+        if self.isrunning():
             raise ValueError("Already started")
         # Start the control thread
         self._do_start(*args, **kargs)
@@ -1313,17 +1492,21 @@ class Automaton:
             elif c.type == _ATMT_Command.BREAKPOINT:
                 raise self.Breakpoint("breakpoint triggered on state [%s]" % c.state.state, state=c.state.state)  # noqa: E501
             elif c.type == _ATMT_Command.EXCEPTION:
-                six.reraise(c.exc_info[0], c.exc_info[1], c.exc_info[2])
+                # this code comes from the `six` module (`.reraise()`)
+                # to raise an exception with specified exc_info.
+                value = c.exc_info[0]() if c.exc_info[1] is None else c.exc_info[1]  # type: ignore  # noqa: E501
+                if value.__traceback__ is not c.exc_info[2]:
+                    raise value.with_traceback(c.exc_info[2])
+                raise value
         return None
 
     def runbg(self, resume=None, wait=False):
         # type: (Optional[Message], Optional[bool]) -> None
         self.run(resume, wait)
 
-    def next(self):
+    def __next__(self):
         # type: () -> Any
         return self.run(resume=Message(type=_ATMT_Command.NEXT))
-    __next__ = next
 
     def _flush_inout(self):
         # type: () -> None
@@ -1337,12 +1520,12 @@ class Automaton:
         Destroys a stopped Automaton: this cleanups all opened file descriptors.
         Required on PyPy for instance where the garbage collector behaves differently.
         """
-        if self.started.locked():
+        if self.isrunning():
             raise ValueError("Can't close running Automaton ! Call stop() beforehand")
-        self._flush_inout()
         # Close command pipes
         self.cmdin.close()
         self.cmdout.close()
+        self._flush_inout()
         # Close opened ioins/ioouts
         for i in itertools.chain(self.ioin.values(), self.ioout.values()):
             if isinstance(i, ObjectPipe):

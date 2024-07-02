@@ -95,6 +95,19 @@ r = m.addfield(None, b"FOO", "c0:01:be:ef:ba:be")
 r
 assert r == b"FOO\xc0\x01\xbe\xef\xba\xbe" 
 
+= LEMACField class
+~ core field
+m = LEMACField("foo", None)
+r = m.i2m(None, None)
+r
+assert r == b"\x00\x00\x00\x00\x00\x00"
+r = m.getfield(None, b"\xbe\xba\xef\xbe\x01\xc0ABCD")
+r
+assert r == (b"ABCD","c0:01:be:ef:ba:be")
+r = m.addfield(None, b"FOO", "be:ba:ef:be:01:c0")
+r
+assert r == b"FOO\xc0\x01\xbe\xef\xba\xbe"
+
 = SourceMACField
 conf.route.add(net="1.2.3.4/32", dev=conf.iface)
 p = Ether() / ARP(pdst="1.2.3.4")
@@ -151,7 +164,7 @@ class TestThreeBytesField(Packet):
     fields_desc = [ 
         X3BytesField('test1', None),
         ThreeBytesField('test2', None),
-        LEX3BytesField('test3', None),
+        XLE3BytesField('test3', None),
         LEThreeBytesField('test4', None),
     ]
 
@@ -183,6 +196,21 @@ assert p.test2 == 0xc000ff3333
 assert p.test3 == 0xffeeddccbbaa9988776655
 assert p.test4 == 309404098707666285700277845
 
+class TestFuzzNBytesField(Packet):
+    fields_desc = [
+        NBytesField('test1', 0, 128),
+    ]
+
+f = fuzz(TestFuzzNBytesField())
+assert f.test1.max == 2 ** (128 * 8) - 1
+
+p2 = TestNBytesField(raw(p))
+assert p2.sprintf('%test1% %test2% %test3% %test4%') == '18838586676582 0xc000ff3333 0xffeeddccbbaa9988776655 309404098707666285700277845'
+assert p2.test1 == 18838586676582
+assert p2.test2 == 0xc000ff3333
+assert p2.test3 == 0xffeeddccbbaa9988776655
+assert p2.test4 == 309404098707666285700277845
+assert raw(p2) == raw(TestNBytesField(test1=p2.test1, test2=p2.test2, test3=p2.test3, test4=p2.test4))
 
 = StrField
 ~ field strfield
@@ -198,7 +226,7 @@ class TestStrField(Packet):
 p = TestStrField(s1="cafe", s2="deadbeef")
 assert raw(p) == b'\x04\x00cafedeadbeef'
 print(p.sprintf("%s1% %s2%"))
-assert p.sprintf("%s1% %s2%") == "'cafe' 'deadbeef'"
+assert p.sprintf("%s1% %s2%") == "b'cafe' b'deadbeef'"
 
 
 = StrFieldUtf16
@@ -235,7 +263,6 @@ assert p.sprintf("%s1%") == 'cafe'
 = Creation of a layer with ActionField
 ~ field actionfield
 
-from __future__ import print_function
 
 class TestAction(Packet):
     __slots__ = ["_val", "_fld", "_priv1", "_priv2"]
@@ -317,7 +344,48 @@ p = TestBFLenF(b"\xff\x6fabcdeFGH")
 p
 assert p.len == 6 and p.str == b"abcde" and Raw in p and p[Raw].load == b"FGH"
 
+= Test BitLenField
+~ field
 
+SIZES = {0: 6, 1: 6, 2: 14, 3: 22}
+
+class TestBitLenField(Packet):
+    fields_desc = [
+        BitField("mode", 0, 2),
+        BitLenField("value", 0, length_from=lambda pkt: SIZES[pkt.mode])
+    ]
+
+p = TestBitLenField(mode=1, value=50)
+assert bytes(p) == b"r"
+
+p = TestBitLenField(mode=2, value=5000)
+assert bytes(p) == b'\x93\x88'
+
+p = TestBitLenField(b'\xc0\x01\xf4')
+assert p.mode == 3
+assert p.value == 500
+
+= Test UTCTimeField
+~ field
+
+class TestUTCTimeField(Packet):
+    fields_desc = [
+        # A Windows time field. See GH#4308
+        UTCTimeField(
+            "Time",
+            None,
+            fmt="<Q",
+            epoch=[1601, 1, 1, 0, 0, 0],
+            custom_scaling=1e7,
+        )
+    ]
+
+
+p = TestUTCTimeField(Time=0)
+assert p.sprintf("%Time%") == 'Mon, 01 Jan 1601 00:00:00  (-11644473600)'
+
+p = TestUTCTimeField(Time=133587912345678900)
+assert p.sprintf("%Time%") == 'Sun, 28 Apr 2024 15:20:34  (1714317634)'
 
 ############
 ############
@@ -355,6 +423,20 @@ assert p.len == 0 and Raw in p and p[Raw].load == b"\x11\x12"
 p = TestFLF(struct.pack("!BIII",3,1234,2345,12345678))
 p
 assert p.len == 3 and p.lst == [1234,2345,12345678]
+
+= Disassemble unaligned
+~ field
+import struct
+class TestFLFUnaligned(Packet):
+    name="test"
+    fields_desc = [ BitFieldLenField("len", None, 3, count_of="lst"),
+                    FieldListField("lst", None, XBitField("elt",0,8), count_from=lambda pkt:pkt.len),
+                    BitField("ignore", None, 5),
+                   ]
+
+p = TestFLFUnaligned(b"\x68\x28\x48\x6a")
+p
+assert p.len == 3 and p.lst == [0x41,0x42,0x43] and p.ignore == 0xa
 
 = Manipulate
 ~ field
@@ -752,6 +834,34 @@ assert p.data[3].data == 0xc102
 assert isinstance(p.payload, conf.raw_layer)
 assert p.payload.load == b'toto'
 
+= Test nested PacketListFields
+~ field
+# Note: having packets that look like this is a terrible idea, and will perform
+# very badly. However we must ensure we don't freeze because of it.
+
+# https://github.com/secdev/scapy/issues/3894
+
+class GuessPayload(Packet):
+     @classmethod
+     def dispatch_hook(cls, *args, **kargs):
+         return TestNestedPLF
+
+class TestNestedPLF(Packet):
+     fields_desc = [
+         ByteField('b', 0),
+         PacketListField('pl', [], GuessPayload)
+     ]
+
+p = TestNestedPLF(b'\x01' * 100)
+
+# check
+i = 1
+while p.pl:
+    p = p.pl[0]
+    p.show()
+    i += 1
+
+assert i == 100
 
 ############
 ############
@@ -848,16 +958,16 @@ f = MultiFlagsField('flags', set(), 3, {
 
 mp = MockPacket(0)
 x = f.i2m(mp, set())
-assert isinstance(x, six.integer_types)
+assert isinstance(x, int)
 assert x == 0
 x = f.i2m(mp, {'A'})
-assert isinstance(x, six.integer_types)
+assert isinstance(x, int)
 assert x == 1
 x = f.i2m(mp, {'A', 'B'})
-assert isinstance(x, six.integer_types)
+assert isinstance(x, int)
 assert x == 3
 x = f.i2m(mp, {'A', 'B', 'bit 2'})
-assert isinstance(x, six.integer_types)
+assert isinstance(x, int)
 assert x == 7
 try:
     x = f.i2m(mp, {'+'})
@@ -1124,10 +1234,6 @@ assert fcb.i2repr_one(None, RandNum(0, 10)) == '<RandNum>'
 True
 
 = EnumField with Enum
-~ python3_only
-
-# not available on Python 2...
-
 from enum import Enum
 
 class JUICE(Enum):
@@ -1142,6 +1248,22 @@ class Breakfast(Packet):
 
 assert raw(Breakfast(juice="ORANGE")) == b"\x00\x01"
 
+= LE3BytesEnumField
+~ field le3bytesenumfield
+
+f = LE3BytesEnumField('test', 0, {0: 'Foo', 1: 'Bar'})
+
+= LE3BytesEnumField.i2repr_one
+~ field le3bytesenumfield
+
+assert f.i2repr_one(None, 0) == 'Foo'
+assert f.i2repr_one(None, 1) == 'Bar'
+assert f.i2repr_one(None, 2) == '2'
+
+= XLE3BytesEnumField
+
+assert XLE3BytesEnumField("a", 0, {0: "test"}).i2repr_one(None, 0) == "test"
+assert XLE3BytesEnumField("a", 0, {0: "test"}).i2repr_one(None, 1) == "0x1"
 
 ############
 ############
@@ -1651,6 +1773,17 @@ assert a.sprintf("%flags%") == "A+B"
 
 b = FlagsTest2(flags="B+C")
 assert b.flags == 0x1000 | 0x0008
+
+= Conditional FlagsField command
+
+class CondFlagsTest(Packet):
+    fields_desc = [
+        ByteField("b", 0),
+        ConditionalField(FlagsField("f", 0, 8, ""), lambda p: p.b == 0)
+    ]
+
+p = CondFlagsTest(b"\x00\x0f")
+assert p == eval(p.command())
 
 ########
 ########
@@ -2214,3 +2347,47 @@ mp = MockPacket(0)
 f = XStrField('test', None)
 x = f.i2repr(mp, RandBin())
 assert x == '<RandBin>'
+
+############
+############
++ Raw() tests
+
+= unaligned data
+
+p = Raw(b"abc")
+p
+
+offsetdata = bytes.fromhex("0" + p.load.hex() + "0")
+
+p = Raw((offsetdata, 4))
+p
+
+############
+############
++ PacketListField() tests
+
+= unaligned data
+
+class PInner(Packet):
+    name = "PInner"
+    fields_desc = [
+        BitField("x", 0, 8),
+    ]
+    def extract_padding(self, s):
+        return '', s
+
+class POuter(Packet):
+    name = "POuter"
+    fields_desc = [
+        BitField("indent", 0, 4),
+        BitFieldLenField("pcount", None, 8, count_of="plist"),
+        PacketListField("plist", None, PInner,
+                             count_from=lambda pkt: pkt.pcount),
+    ]
+
+p = POuter(b"\xf0\x44\x14\x24\x34\x40")
+p
+
+assert p.indent == 0xf
+assert p.pcount == 4
+assert [p.x for p in p.plist] == [0x41, 0x42, 0x43, 0x44]

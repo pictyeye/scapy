@@ -11,10 +11,8 @@ from ctypes.util import find_library
 import struct
 import socket
 
-from scapy.compat import Optional, Union, Tuple, Type, cast
 from scapy.contrib.isotp import log_isotp
 from scapy.packet import Packet
-import scapy.libs.six as six
 from scapy.error import Scapy_Exception
 from scapy.supersocket import SuperSocket
 from scapy.data import SO_TIMESTAMPNS
@@ -22,6 +20,16 @@ from scapy.config import conf
 from scapy.arch.linux import get_last_packet_timestamp, SIOCGIFINDEX
 from scapy.contrib.isotp.isotp_packet import ISOTP
 from scapy.layers.can import CAN_MTU, CAN_FD_MTU, CAN_MAX_DLEN, CAN_FD_MAX_DLEN
+
+# Typing imports
+from typing import (
+    Any,
+    Optional,
+    Union,
+    Tuple,
+    Type,
+    cast,
+)
 
 LIBC = ctypes.cdll.LoadLibrary(find_library("c"))  # type: ignore
 
@@ -297,7 +305,7 @@ class ISOTPNativeSocket(SuperSocket):
                  ):
         # type: (...) -> None
 
-        if not isinstance(iface, six.string_types):
+        if not isinstance(iface, str):
             # This is for interoperability with ISOTPSoftSockets.
             # If a NativeCANSocket is provided, the interface name of this
             # socket is extracted and an ISOTPNativeSocket will be opened
@@ -372,17 +380,23 @@ class ISOTPNativeSocket(SuperSocket):
                                   "Increasing `stmin` could solve this problem.")
             elif e.errno == 110:
                 log_isotp.warning('Captured no data, socket read timed out.')
+            elif e.errno == 70:
+                log_isotp.warning(
+                    'Communication error on send. '
+                    'TX path flowcontrol reception timeout.')
             else:
+                log_isotp.error(
+                    'Unknown error code received %d. Closing socket!', e.errno)
                 self.close()
             return None, None, None
 
-        if ts is None:
+        if pkt and ts is None:
             ts = get_last_packet_timestamp(self.ins)
         return self.basecls, pkt, ts
 
-    def recv(self, x=0xffff):
-        # type: (int) -> Optional[Packet]
-        msg = SuperSocket.recv(self, x)
+    def recv(self, x=0xffff, **kwargs):
+        # type: (int, **Any) -> Optional[Packet]
+        msg = SuperSocket.recv(self, x, **kwargs)
         if msg is None:
             return msg
 

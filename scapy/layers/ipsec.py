@@ -30,7 +30,6 @@ Example of use:
 True
 """
 
-from __future__ import absolute_import
 try:
     from math import gcd
 except ImportError:
@@ -44,11 +43,26 @@ from scapy.config import conf, crypto_validator
 from scapy.compat import orb, raw
 from scapy.data import IP_PROTOS
 from scapy.error import log_loading
-from scapy.fields import ByteEnumField, ByteField, IntField, PacketField, \
-    ShortField, StrField, XIntField, XStrField, XStrLenField
-from scapy.packet import Packet, bind_layers, Raw
+from scapy.fields import (
+    ByteEnumField,
+    ByteField,
+    IntField,
+    PacketField,
+    ShortField,
+    StrField,
+    XByteField,
+    XIntField,
+    XStrField,
+    XStrLenField,
+)
+from scapy.packet import (
+    Packet,
+    Raw,
+    bind_bottom_up,
+    bind_layers,
+    bind_top_down,
+)
 from scapy.layers.inet import IP, UDP
-import scapy.libs.six as six
 from scapy.layers.inet6 import IPv6, IPv6ExtHdrHopByHop, IPv6ExtHdrDestOpt, \
     IPv6ExtHdrRouting
 
@@ -116,6 +130,17 @@ class ESP(Packet):
         XStrField('data', None),
     ]
 
+    @classmethod
+    def dispatch_hook(cls, _pkt=None, *args, **kargs):
+        if _pkt:
+            if len(_pkt) >= 4 and struct.unpack("!I", _pkt[0:4])[0] == 0x00:
+                return NON_ESP
+            elif len(_pkt) == 1 and struct.unpack("!B", _pkt)[0] == 0xff:
+                return NAT_KEEPALIVE
+            else:
+                return ESP
+        return cls
+
     overload_fields = {
         IP: {'proto': socket.IPPROTO_ESP},
         IPv6: {'nh': socket.IPPROTO_ESP},
@@ -125,10 +150,27 @@ class ESP(Packet):
     }
 
 
+class NON_ESP(Packet):  # RFC 3948, section 2.2
+    fields_desc = [
+        XIntField("non_esp", 0x0)
+    ]
+
+
+class NAT_KEEPALIVE(Packet):  # RFC 3948, section 2.2
+    fields_desc = [
+        XByteField("nat_keepalive", 0xFF)
+    ]
+
+
 bind_layers(IP, ESP, proto=socket.IPPROTO_ESP)
 bind_layers(IPv6, ESP, nh=socket.IPPROTO_ESP)
-bind_layers(UDP, ESP, dport=4500)  # NAT-Traversal encapsulation
-bind_layers(UDP, ESP, sport=4500)  # NAT-Traversal encapsulation
+
+# NAT-Traversal encapsulation
+bind_bottom_up(UDP, ESP, dport=4500)
+bind_bottom_up(UDP, ESP, sport=4500)
+bind_top_down(UDP, ESP, dport=4500, sport=4500)
+bind_top_down(UDP, NON_ESP, dport=4500, sport=4500)
+bind_top_down(UDP, NAT_KEEPALIVE, dport=4500, sport=4500)
 
 ###############################################################################
 
@@ -166,6 +208,13 @@ if conf.crypto_valid:
         algorithms,
         modes,
     )
+    try:
+        # cryptography > 43.0
+        from cryptography.hazmat.decrepit.ciphers import (
+            algorithms as decrepit_algorithms
+        )
+    except ImportError:
+        decrepit_algorithms = algorithms
 else:
     log_loading.info("Can't import python-cryptography v1.7+. "
                      "Disabled IPsec encryption/authentication.")
@@ -370,7 +419,11 @@ class CryptAlgo(object):
                     cipher = self.cipher(key, tag_length=icv_size)
                 else:
                     cipher = self.cipher(key)
-                data = cipher.encrypt(mode_iv, data, aad)
+                if self.name == 'AES-NULL-GMAC':
+                    # Special case for GMAC (rfc 4543 sect 3)
+                    data = data + cipher.encrypt(mode_iv, b"", aad + esp.iv + data)
+                else:
+                    data = cipher.encrypt(mode_iv, data, aad)
             else:
                 cipher = self.new_cipher(key, mode_iv)
                 encryptor = cipher.encryptor()
@@ -422,7 +475,11 @@ class CryptAlgo(object):
                 else:
                     cipher = self.cipher(key)
                 try:
-                    data = cipher.decrypt(mode_iv, data + icv, aad)
+                    if self.name == 'AES-NULL-GMAC':
+                        # Special case for GMAC (rfc 4543 sect 3)
+                        data = data + cipher.decrypt(mode_iv, icv, aad + iv + data)
+                    else:
+                        data = cipher.decrypt(mode_iv, data + icv, aad)
                 except InvalidTag as err:
                     raise IPSecIntegrityError(err)
             else:
@@ -442,8 +499,8 @@ class CryptAlgo(object):
         nh = orb(data[-1])
 
         # then use padlen to determine data and padding
-        data = data[:len(data) - padlen - 2]
         padding = data[len(data) - padlen - 2: len(data) - 2]
+        data = data[:len(data) - padlen - 2]
 
         return _ESPPlain(spi=esp.spi,
                          seq=esp.seq,
@@ -485,6 +542,17 @@ if algorithms:
                                        iv_size=8,
                                        icv_size=16,
                                        format_mode_iv=_salt_format_mode_iv)
+    # GMAC: rfc 4543, "companion to the AES Galois/Counter Mode ESP"
+    # This is defined as a crypt_algo by rfc, but has the role of an auth_algo
+    CRYPT_ALGOS['AES-NULL-GMAC'] = CryptAlgo('AES-NULL-GMAC',
+                                             cipher=aead.AESGCM,
+                                             key_size=(16, 24, 32),
+                                             mode=None,
+                                             salt_size=4,
+                                             block_size=1,
+                                             iv_size=8,
+                                             icv_size=16,
+                                             format_mode_iv=_salt_format_mode_iv)
     CRYPT_ALGOS['AES-CCM'] = CryptAlgo('AES-CCM',
                                        cipher=aead.AESCCM,
                                        mode=None,
@@ -504,34 +572,35 @@ if algorithms:
                                                  icv_size=16,
                                                  format_mode_iv=_salt_format_mode_iv)  # noqa: E501
 
-    # XXX: RFC7321 states that DES *MUST NOT* be implemented.
-    # XXX: Keep for backward compatibility?
     # Using a TripleDES cipher algorithm for DES is done by using the same 64
     # bits key 3 times (done by cryptography when given a 64 bits key)
     CRYPT_ALGOS['DES'] = CryptAlgo('DES',
-                                   cipher=algorithms.TripleDES,
+                                   cipher=decrepit_algorithms.TripleDES,
                                    mode=modes.CBC,
                                    key_size=(8,))
     CRYPT_ALGOS['3DES'] = CryptAlgo('3DES',
-                                    cipher=algorithms.TripleDES,
+                                    cipher=decrepit_algorithms.TripleDES,
                                     mode=modes.CBC)
-    try:
+    if decrepit_algorithms is algorithms:
+        # cryptography < 43 raises a DeprecationWarning
         from cryptography.utils import CryptographyDeprecationWarning
         with warnings.catch_warnings():
             # Hide deprecation warnings
             warnings.filterwarnings("ignore",
                                     category=CryptographyDeprecationWarning)
             CRYPT_ALGOS['CAST'] = CryptAlgo('CAST',
-                                            cipher=algorithms.CAST5,
+                                            cipher=decrepit_algorithms.CAST5,
                                             mode=modes.CBC)
-            # XXX: Flagged as weak by 'cryptography'.
-            # Kept for backward compatibility
             CRYPT_ALGOS['Blowfish'] = CryptAlgo('Blowfish',
-                                                cipher=algorithms.Blowfish,
+                                                cipher=decrepit_algorithms.Blowfish,
                                                 mode=modes.CBC)
-    except AttributeError:
-        # Future-proof, if ever removed from cryptography
-        pass
+    else:
+        CRYPT_ALGOS['CAST'] = CryptAlgo('CAST',
+                                        cipher=decrepit_algorithms.CAST5,
+                                        mode=modes.CBC)
+        CRYPT_ALGOS['Blowfish'] = CryptAlgo('Blowfish',
+                                            cipher=decrepit_algorithms.Blowfish,
+                                            mode=modes.CBC)
 
 
 ###############################################################################
@@ -613,16 +682,17 @@ class AuthAlgo(object):
         mac = self.new_mac(key)
 
         if pkt.haslayer(ESP):
-            mac.update(raw(pkt[ESP]))
+            mac.update(bytes(pkt[ESP]))
+            if esn_en:
+                # RFC4303 sect 2.2.1
+                mac.update(struct.pack('!L', esn))
             pkt[ESP].data += mac.finalize()[:self.icv_size]
 
         elif pkt.haslayer(AH):
-            clone = zero_mutable_fields(pkt.copy(), sending=True)
+            mac.update(bytes(zero_mutable_fields(pkt.copy(), sending=True)))
             if esn_en:
-                temp = raw(clone) + struct.pack('!L', esn)
-            else:
-                temp = raw(clone)
-            mac.update(temp)
+                # RFC4302 sect 2.5.1
+                mac.update(struct.pack('!L', esn))
             pkt[AH].icv = mac.finalize()[:self.icv_size]
 
         return pkt
@@ -651,7 +721,10 @@ class AuthAlgo(object):
             pkt_icv = pkt.data[len(pkt.data) - self.icv_size:]
             clone = pkt.copy()
             clone.data = clone.data[:len(clone.data) - self.icv_size]
-            temp = raw(clone)
+            mac.update(bytes(clone))
+            if esn_en:
+                # RFC4303 sect 2.2.1
+                mac.update(struct.pack('!L', esn))
 
         elif pkt.haslayer(AH):
             if len(pkt[AH].icv) != self.icv_size:
@@ -660,12 +733,11 @@ class AuthAlgo(object):
                 pkt[AH].icv = pkt[AH].icv[:self.icv_size]
             pkt_icv = pkt[AH].icv
             clone = zero_mutable_fields(pkt.copy(), sending=False)
+            mac.update(bytes(clone))
             if esn_en:
-                temp = raw(clone) + struct.pack('!L', esn)
-            else:
-                temp = raw(clone)
+                # RFC4302 sect 2.5.1
+                mac.update(struct.pack('!L', esn))
 
-        mac.update(temp)
         computed_icv = mac.finalize()[:self.icv_size]
 
         # XXX: Cannot use mac.verify because the ICV can be truncated
@@ -881,10 +953,10 @@ class SecurityAssociation(object):
         :param esn: extended sequence number (32 MSB)
         """
 
-        if proto not in (ESP, AH, ESP.name, AH.name):
+        if proto not in {ESP, AH, ESP.name, AH.name}:
             raise ValueError("proto must be either ESP or AH")
-        if isinstance(proto, six.string_types):
-            self.proto = eval(proto)
+        if isinstance(proto, str):
+            self.proto = {ESP.name: ESP, AH.name: AH}[proto]
         else:
             self.proto = proto
 
@@ -972,7 +1044,10 @@ class SecurityAssociation(object):
                                       esn_en=esn_en or self.esn_en,
                                       esn=esn or self.esn)
 
-        self.auth_algo.sign(esp, self.auth_key)
+        self.auth_algo.sign(esp,
+                            self.auth_key,
+                            esn_en=esn_en or self.esn_en,
+                            esn=esn or self.esn)
 
         if self.nat_t_header:
             nat_t_header = self.nat_t_header.copy()
@@ -985,17 +1060,16 @@ class SecurityAssociation(object):
             ip_header /= nat_t_header
 
         if ip_header.version == 4:
-            ip_header.len = len(ip_header) + len(esp)
+            del ip_header.len
             del ip_header.chksum
-            ip_header = ip_header.__class__(raw(ip_header))
         else:
-            ip_header.plen = len(ip_header.payload) + len(esp)
+            del ip_header.plen
 
         # sequence number must always change, unless specified by the user
         if seq_num is None:
             self.seq_num += 1
 
-        return ip_header / esp
+        return ip_header.__class__(raw(ip_header / esp))
 
     def _encrypt_ah(self, pkt, seq_num=None, esn_en=False, esn=0):
 
@@ -1084,7 +1158,9 @@ class SecurityAssociation(object):
 
         if verify:
             self.check_spi(pkt)
-            self.auth_algo.verify(encrypted, self.auth_key)
+            self.auth_algo.verify(encrypted, self.auth_key,
+                                  esn_en=esn_en or self.esn_en,
+                                  esn=esn or self.esn)
 
         esp = self.crypt_algo.decrypt(self, encrypted, self.crypt_key,
                                       self.crypt_icv_size or

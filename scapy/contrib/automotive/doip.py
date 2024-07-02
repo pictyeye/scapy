@@ -13,15 +13,33 @@ import socket
 import time
 
 from scapy.contrib.automotive import log_automotive
-from scapy.fields import ByteEnumField, ConditionalField, \
-    XByteField, XShortField, XIntField, XShortEnumField, XByteEnumField, \
-    IntField, StrFixedLenField, XStrField
+from scapy.fields import (
+    ByteEnumField,
+    ConditionalField,
+    IntField,
+    MayEnd,
+    StrFixedLenField,
+    XByteEnumField,
+    XByteField,
+    XIntField,
+    XShortEnumField,
+    XShortField,
+    XStrField,
+)
 from scapy.packet import Packet, bind_layers, bind_bottom_up
 from scapy.supersocket import StreamSocket
 from scapy.layers.inet import TCP, UDP
 from scapy.contrib.automotive.uds import UDS
 from scapy.data import MTU
-from scapy.compat import Union, Tuple, Optional
+
+from typing import (
+    Any,
+    Union,
+    Tuple,
+    Optional,
+)
+
+# ISO 13400-2 sect 9.2
 
 
 class DoIP(Packet):
@@ -116,7 +134,7 @@ class DoIP(Packet):
                          lambda p: p.payload_type in [2, 4]),
         ConditionalField(StrFixedLenField("gid", b"", 6),
                          lambda p: p.payload_type in [4]),
-        ConditionalField(XByteEnumField("further_action", 0, {
+        ConditionalField(MayEnd(XByteEnumField("further_action", 0, {
             0x00: "No further action required",
             0x01: "Reserved by ISO 13400", 0x02: "Reserved by ISO 13400",
             0x03: "Reserved by ISO 13400", 0x04: "Reserved by ISO 13400",
@@ -127,7 +145,9 @@ class DoIP(Packet):
             0x0d: "Reserved by ISO 13400", 0x0e: "Reserved by ISO 13400",
             0x0f: "Reserved by ISO 13400",
             0x10: "Routing activation required to initiate central security",
-        }), lambda p: p.payload_type in [4]),
+        })), lambda p: p.payload_type in [4]),
+        # VIN/GID sync. status is marked as optional, so the packet MayEnd
+        # on further_action
         ConditionalField(XByteEnumField("vin_gid_status", 0, {
             0x00: "VIN and/or GID are synchronized",
             0x01: "Reserved by ISO 13400", 0x02: "Reserved by ISO 13400",
@@ -268,18 +288,40 @@ class DoIPSocket(StreamSocket):
         self.ip = ip
         self.port = port
         self.source_address = source_address
+        self.buffer = b""
         self._init_socket()
 
         if activate_routing:
             self._activate_routing(
                 source_address, target_address, activation_type, reserved_oem)
 
+    def recv(self, x=MTU, **kwargs):
+        # type: (Optional[int], **Any) -> Optional[Packet]
+        if self.buffer:
+            len_data = self.buffer[:8]
+        else:
+            len_data = self.ins.recv(8, socket.MSG_PEEK)
+            if len(len_data) != 8:
+                return None
+
+        len_int = struct.unpack(">I", len_data[4:8])[0]
+        len_int += 8
+        self.buffer += self.ins.recv(len_int - len(self.buffer))
+
+        if len(self.buffer) != len_int:
+            return None
+
+        pkt = self.basecls(self.buffer, **kwargs)  # type: Packet
+        self.buffer = b""
+        return pkt
+
     def _init_socket(self, sock_family=socket.AF_INET):
         # type: (int) -> None
         s = socket.socket(sock_family, socket.SOCK_STREAM)
         s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        s.connect((self.ip, self.port))
+        addrinfo = socket.getaddrinfo(self.ip, self.port, proto=socket.IPPROTO_TCP)
+        s.connect(addrinfo[0][-1])
         StreamSocket.__init__(self, s, DoIP)
 
     def _activate_routing(self,
@@ -323,6 +365,7 @@ class DoIPSocket6(DoIPSocket):
 
     Example:
         >>> socket = DoIPSocket6("2001:16b8:3f0e:2f00:21a:37ff:febf:edb9")
+        >>> socket_link_local = DoIPSocket6("fe80::30e8:80ff:fe07:6d43%eth1")
         >>> pkt = DoIP(payload_type=0x8001, source_address=0xe80, target_address=0x1000) / UDS() / UDS_RDBI(identifiers=[0x1000])
         >>> resp = socket.sr1(pkt, timeout=1)
     """  # noqa: E501
@@ -333,6 +376,7 @@ class DoIPSocket6(DoIPSocket):
         self.ip = ip
         self.port = port
         self.source_address = source_address
+        self.buffer = b""
         super(DoIPSocket6, self)._init_socket(socket.AF_INET6)
 
         if activate_routing:
@@ -365,9 +409,9 @@ class UDS_DoIPSocket(DoIPSocket):
 
         return super(UDS_DoIPSocket, self).send(pkt)
 
-    def recv(self, x=MTU):
-        # type: (int) -> Optional[Packet]
-        pkt = super(UDS_DoIPSocket, self).recv(x)
+    def recv(self, x=MTU, **kwargs):
+        # type: (Optional[int], **Any) -> Optional[Packet]
+        pkt = super(UDS_DoIPSocket, self).recv(x, **kwargs)
         if pkt and pkt.payload_type == 0x8001:
             return pkt.payload
         else:

@@ -9,7 +9,6 @@
 TLS key exchange logic.
 """
 
-from __future__ import absolute_import
 import math
 import struct
 
@@ -748,7 +747,7 @@ class ClientDiffieHellmanPublic(_GenericTLSSessionInheritance):
         if s.client_kx_privkey and s.server_kx_pubkey:
             pms = s.client_kx_privkey.exchange(s.server_kx_pubkey)
             s.pre_master_secret = pms.lstrip(b"\x00")
-            if not s.extms or s.session_hash:
+            if not s.extms:
                 # If extms is set (extended master secret), the key will
                 # need the session hash to be computed. This is provided
                 # by the TLSClientKeyExchange. Same in all occurrences
@@ -782,7 +781,7 @@ class ClientDiffieHellmanPublic(_GenericTLSSessionInheritance):
         if s.server_kx_privkey and s.client_kx_pubkey:
             ZZ = s.server_kx_privkey.exchange(s.client_kx_pubkey)
             s.pre_master_secret = ZZ.lstrip(b"\x00")
-            if not s.extms or s.session_hash:
+            if not s.extms:
                 s.compute_ms_and_derive_keys()
 
     def guess_payload_class(self, p):
@@ -829,7 +828,7 @@ class ClientECDiffieHellmanPublic(_GenericTLSSessionInheritance):
 
         if s.client_kx_privkey and s.server_kx_pubkey:
             s.pre_master_secret = pms
-            if not s.extms or s.session_hash:
+            if not s.extms:
                 s.compute_ms_and_derive_keys()
 
     def post_build(self, pkt, pay):
@@ -855,7 +854,7 @@ class ClientECDiffieHellmanPublic(_GenericTLSSessionInheritance):
         if s.server_kx_privkey and s.client_kx_pubkey:
             ZZ = s.server_kx_privkey.exchange(ec.ECDH(), s.client_kx_pubkey)
             s.pre_master_secret = ZZ
-            if not s.extms or s.session_hash:
+            if not s.extms:
                 s.compute_ms_and_derive_keys()
 
 
@@ -919,7 +918,7 @@ class EncryptedPreMasterSecret(_GenericTLSSessionInheritance):
             warning(err)
 
         s.pre_master_secret = pms
-        if not s.extms or s.session_hash:
+        if not s.extms:
             s.compute_ms_and_derive_keys()
 
         return pms
@@ -935,7 +934,7 @@ class EncryptedPreMasterSecret(_GenericTLSSessionInheritance):
 
         s = self.tls_session
         s.pre_master_secret = enc
-        if not s.extms or s.session_hash:
+        if not s.extms:
             s.compute_ms_and_derive_keys()
 
         if s.server_tmp_rsa_key is not None:

@@ -8,6 +8,7 @@ Common customizations for all Unix-like operating systems other than Linux
 """
 
 import os
+import re
 import socket
 import struct
 from fcntl import ioctl
@@ -23,7 +24,7 @@ from scapy.utils6 import in6_getscope, construct_source_candidate_set
 from scapy.utils6 import in6_isvalid, in6_ismlladdr, in6_ismnladdr
 
 # Typing imports
-from scapy.compat import (
+from typing import (
     List,
     Optional,
     Tuple,
@@ -409,3 +410,18 @@ def read_routes6():
 
     fd_netstat.close()
     return routes
+
+
+#######
+# DNS #
+#######
+
+def read_nameservers() -> List[str]:
+    """Return the nameservers configured by the OS
+    """
+    try:
+        with open('/etc/resolv.conf', 'r') as fd:
+            return re.findall(r"nameserver\s+([^\s]+)", fd.read())
+    except FileNotFoundError:
+        warning("Could not retrieve the OS's nameserver !")
+        return []

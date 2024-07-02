@@ -11,19 +11,19 @@ Answering machines.
 #  Answering machines  #
 ########################
 
+import abc
 import functools
+import threading
 import socket
 import warnings
 
 from scapy.arch import get_if_addr
 from scapy.config import conf
-from scapy.sendrecv import send, sniff, AsyncSniffer
+from scapy.sendrecv import sendp, sniff, AsyncSniffer
 from scapy.packet import Packet
 from scapy.plist import PacketList
 
-import scapy.libs.six as six
-
-from scapy.compat import (
+from typing import (
     Any,
     Callable,
     Dict,
@@ -32,14 +32,13 @@ from scapy.compat import (
     Tuple,
     Type,
     TypeVar,
-    _Generic_metaclass,
     cast,
 )
 
 _T = TypeVar("_T", Packet, PacketList)
 
 
-class ReferenceAM(_Generic_metaclass):
+class ReferenceAM(type):
     def __new__(cls,
                 name,  # type: str
                 bases,  # type: Tuple[type, ...]
@@ -68,8 +67,7 @@ class ReferenceAM(_Generic_metaclass):
         return obj
 
 
-@six.add_metaclass(ReferenceAM)
-class AnsweringMachine(Generic[_T]):
+class AnsweringMachine(Generic[_T], metaclass=ReferenceAM):
     function_name = ""
     filter = None  # type: Optional[str]
     sniff_options = {"store": 0}  # type: Dict[str, Any]
@@ -77,7 +75,7 @@ class AnsweringMachine(Generic[_T]):
                           "type", "prn", "stop_filter", "opened_socket"]
     send_options = {"verbose": 0}  # type: Dict[str, Any]
     send_options_list = ["iface", "inter", "loop", "verbose", "socket"]
-    send_function = staticmethod(send)
+    send_function = staticmethod(sendp)
 
     def __init__(self, **kargs):
         # type: (Any) -> None
@@ -145,9 +143,10 @@ class AnsweringMachine(Generic[_T]):
         # type: (Packet) -> int
         return 1
 
+    @abc.abstractmethod
     def make_reply(self, req):
         # type: (Packet) -> _T
-        return req
+        pass
 
     def send_reply(self, reply, send_function=None):
         # type: (_T, Optional[Callable[..., None]]) -> None
@@ -227,12 +226,14 @@ class AnsweringMachine(Generic[_T]):
 class AnsweringMachineTCP(AnsweringMachine[Packet]):
     """
     An answering machine that use the classic socket.socket to
-    answer multiple clients
+    answer multiple TCP clients
     """
+    TYPE = socket.SOCK_STREAM
+
     def parse_options(self, port=80, cls=conf.raw_layer):
         # type: (int, Type[Packet]) -> None
         self.port = port
-        self.cls = conf.raw_layer
+        self.cls = cls
 
     def close(self):
         # type: () -> None
@@ -241,7 +242,11 @@ class AnsweringMachineTCP(AnsweringMachine[Packet]):
     def sniff(self):
         # type: () -> None
         from scapy.supersocket import StreamSocket
-        ssock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        ssock = socket.socket(socket.AF_INET, self.TYPE)
+        try:
+            ssock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        except OSError:
+            pass
         ssock.bind(
             (get_if_addr(self.optsniff.get("iface", conf.iface)), self.port))
         ssock.listen()
@@ -269,6 +274,19 @@ class AnsweringMachineTCP(AnsweringMachine[Packet]):
             self.close()
             ssock.close()
 
+    def sniff_bg(self):
+        # type: () -> None
+        self.sniffer = threading.Thread(target=self.sniff)  # type: ignore
+        self.sniffer.start()
+
     def make_reply(self, req, address=None):
         # type: (Packet, Optional[Any]) -> Packet
-        return super(AnsweringMachineTCP, self).make_reply(req)
+        return req
+
+
+class AnsweringMachineUDP(AnsweringMachineTCP):
+    """
+    An answering machine that use the classic socket.socket to
+    answer multiple UDP clients
+    """
+    TYPE = socket.SOCK_DGRAM

@@ -15,7 +15,6 @@ See the TLS class documentation for more information.
 
 import struct
 
-from scapy.config import conf
 from scapy.error import log_runtime, warning
 from scapy.compat import raw, orb
 from scapy.fields import ByteEnumField, PacketField, XStrField
@@ -165,15 +164,7 @@ class TLS13(_GenericTLSSessionInheritance):
         Note that overloading .guess_payload_class() would not be enough,
         as the TLS session to be used would get lost.
         """
-        if s:
-            try:
-                p = TLS(s, _internal=1, _underlayer=self,
-                        tls_session=self.tls_session)
-            except KeyboardInterrupt:
-                raise
-            except Exception:
-                p = conf.raw_layer(s, _internal=1, _underlayer=self)
-            self.add_payload(p)
+        return TLS.do_dissect_payload(self, s)
 
     # Building methods
 
@@ -216,3 +207,10 @@ class TLS13(_GenericTLSSessionInheritance):
             self.tls_session.triggered_pwcs_commit = False
 
         return hdr + frag + pay
+
+    def mysummary(self):
+        s, n = super(TLS13, self).mysummary()
+        if self.inner and self.inner.msg:
+            s += " / "
+            s += " / ".join(getattr(x, "_name", x.name) for x in self.inner.msg)
+        return s, n

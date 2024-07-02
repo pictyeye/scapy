@@ -8,8 +8,6 @@
 ASN.1 (Abstract Syntax Notation One)
 """
 
-from __future__ import absolute_import
-from __future__ import print_function
 import random
 
 from datetime import datetime, timedelta, tzinfo
@@ -18,9 +16,8 @@ from scapy.error import Scapy_Exception, warning
 from scapy.volatile import RandField, RandIP, GeneralizedTime
 from scapy.utils import Enum_metaclass, EnumElement, binrepr
 from scapy.compat import plain_str, bytes_encode, chb, orb
-import scapy.libs.six as six
 
-from scapy.compat import (
+from typing import (
     Any,
     AnyStr,
     Dict,
@@ -29,11 +26,12 @@ from scapy.compat import (
     Optional,
     Tuple,
     Type,
-    TypeVar,
     Union,
-    _Generic_metaclass,
     cast,
     TYPE_CHECKING,
+)
+from typing import (
+    TypeVar,
 )
 
 if TYPE_CHECKING:
@@ -79,9 +77,7 @@ class RandASN1Object(RandField["ASN1_Object[Any]"]):
         else:
             self.objlist = [
                 x._asn1_obj
-                for x in six.itervalues(
-                    ASN1_Class_UNIVERSAL.__rdict__  # type: ignore
-                )
+                for x in ASN1_Class_UNIVERSAL.__rdict__.values()  # type: ignore
                 if hasattr(x, "_asn1_obj")
             ]
         self.chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"  # noqa: E501
@@ -149,8 +145,7 @@ class ASN1_Codecs_metaclass(Enum_metaclass):
     element_class = ASN1Codec
 
 
-@six.add_metaclass(ASN1_Codecs_metaclass)
-class ASN1_Codecs:
+class ASN1_Codecs(metaclass=ASN1_Codecs_metaclass):
     BER = cast(ASN1Codec, 1)
     DER = cast(ASN1Codec, 2)
     PER = cast(ASN1Codec, 3)
@@ -215,12 +210,12 @@ class ASN1_Class_metaclass(Enum_metaclass):
                 ):
         # type: (...) -> Type[ASN1_Class]
         for b in bases:
-            for k, v in six.iteritems(b.__dict__):
+            for k, v in b.__dict__.items():
                 if k not in dct and isinstance(v, ASN1Tag):
                     dct[k] = v.clone()
 
         rdict = {}
-        for k, v in six.iteritems(dct):
+        for k, v in dct.items():
             if isinstance(v, int):
                 v = ASN1Tag(k, v)
                 dct[k] = v
@@ -231,15 +226,14 @@ class ASN1_Class_metaclass(Enum_metaclass):
 
         ncls = cast('Type[ASN1_Class]',
                     type.__new__(cls, name, bases, dct))
-        for v in six.itervalues(ncls.__dict__):
+        for v in ncls.__dict__.values():
             if isinstance(v, ASN1Tag):
                 # overwrite ASN1Tag contexts, even cloned ones
                 v.context = ncls
         return ncls
 
 
-@six.add_metaclass(ASN1_Class_metaclass)
-class ASN1_Class:
+class ASN1_Class(metaclass=ASN1_Class_metaclass):
     pass
 
 
@@ -281,11 +275,12 @@ class ASN1_Class_UNIVERSAL(ASN1_Class):
     BMP_STRING = cast(ASN1Tag, 30)
     IPADDRESS = cast(ASN1Tag, 0 | 0x40)     # application-specific encoding
     COUNTER32 = cast(ASN1Tag, 1 | 0x40)     # application-specific encoding
+    COUNTER64 = cast(ASN1Tag, 6 | 0x40)     # application-specific encoding
     GAUGE32 = cast(ASN1Tag, 2 | 0x40)       # application-specific encoding
     TIME_TICKS = cast(ASN1Tag, 3 | 0x40)    # application-specific encoding
 
 
-class ASN1_Object_metaclass(_Generic_metaclass):
+class ASN1_Object_metaclass(type):
     def __new__(cls,
                 name,  # type: str
                 bases,  # type: Tuple[type, ...]
@@ -306,8 +301,7 @@ class ASN1_Object_metaclass(_Generic_metaclass):
 _K = TypeVar('_K')
 
 
-@six.add_metaclass(ASN1_Object_metaclass)
-class ASN1_Object(Generic[_K]):
+class ASN1_Object(Generic[_K], metaclass=ASN1_Object_metaclass):
     tag = ASN1_Class_UNIVERSAL.ANY
 
     def __init__(self, val):
@@ -362,9 +356,16 @@ class ASN1_Object(Generic[_K]):
         # type: (Any) -> bool
         return bool(self.val != other)
 
-    def command(self):
-        # type: () -> str
-        return "%s(%s)" % (self.__class__.__name__, repr(self.val))
+    def command(self, json=False):
+        # type: (bool) -> Union[Dict[str, str], str]
+        if json:
+            if isinstance(self.val, bytes):
+                val = self.val.decode("utf-8", errors="backslashreplace")
+            else:
+                val = repr(self.val)
+            return {"type": self.__class__.__name__, "value": val}
+        else:
+            return "%s(%s)" % (self.__class__.__name__, repr(self.val))
 
 
 #######################
@@ -492,6 +493,15 @@ class ASN1_BIT_STRING(ASN1_Object[str]):
                     "is not supported.")
         else:
             object.__setattr__(self, name, value)
+
+    def set(self, i, val):
+        # type: (int, str) -> None
+        """
+        Sets bit 'i' to value 'val' (starting from 0)
+        """
+        val = str(val)
+        assert val in ['0', '1']
+        self.val = self.val[:i] + val + self.val[i + 1:]
 
     def __repr__(self):
         # type: () -> str
@@ -722,6 +732,10 @@ class ASN1_IPADDRESS(ASN1_STRING):
 
 class ASN1_COUNTER32(ASN1_INTEGER):
     tag = ASN1_Class_UNIVERSAL.COUNTER32
+
+
+class ASN1_COUNTER64(ASN1_INTEGER):
+    tag = ASN1_Class_UNIVERSAL.COUNTER64
 
 
 class ASN1_GAUGE32(ASN1_INTEGER):
